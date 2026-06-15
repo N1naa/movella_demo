@@ -8,6 +8,7 @@ from aiohttp import web
 import placement_scan_movella as psm
 import pi_ttl as ttl
 import inference as infer
+import recorder as rec
 
 HERE = Path(__file__).parent
 CONFIG = HERE / "placement.json"
@@ -43,6 +44,9 @@ async def trigger_loop(app):
     async for s in sources["forearm"].samples():
         val = infer.compute_features(s, feature)
         fired = bool(app["session"] and val > threshold and trig.fire_if_ready(s.host_t_us))
+        if fired:
+            app["recorder"].write_event(trig.pulse_count, s.host_t_us, s.sensor_t_us,
+                                        feature, val, threshold, trig.refractory_s)
         remaining = max(0.0, trig.refractory_s - (s.host_t_us / 1e6 - trig.last_fire_t))
         await broadcast(app, {
             "connected": True, "gpio_mock": trig.is_mock, "session": app["session"],
@@ -71,22 +75,37 @@ async def index(request):
 
 
 async def session_handler(request):
+    app = request.app
     body = await request.json()
     on = bool(body.get("on"))
-    request.app["session"] = on
+    app["session"] = on
     if on:
-        request.app["trig"].reset()        # fresh session: armed now, fire count cleared
+        app["trig"].reset()                # fresh session: armed now, fire count cleared
+        pl = app["placement"]
+        rate = next(iter(app["sources"].values())).rate_hz
+        app["recorder"].start(app["sources"].keys(), {
+            "feature": pl.trigger.feature, "threshold": pl.trigger.threshold,
+            "refractory_s": pl.trigger.refractory_s, "source_role": pl.trigger.source,
+            "scale": 2.5 * pl.trigger.threshold, "rate_hz": rate,
+            "gpio_mock": app["trig"].is_mock,
+            "roles": {role: suf for role, _, suf in app["assigned"]},
+        })
+    else:
+        app["recorder"].stop()
     return web.json_response({"ok": True, "session": on})
 
 
 async def on_startup(app):
     placement = psm.Placement.load(CONFIG)
     assigned = await psm.scan_and_assign(placement)   # raises loudly if a DOT is missing
-    sources = {role: psm.BleakMovellaSource(addr, sensor_id=suf, role=role)
+    app["recorder"] = rec.Recorder(HERE / "recordings")
+    sources = {role: psm.BleakMovellaSource(addr, sensor_id=suf, role=role,
+                                            on_sample=app["recorder"].write_sample)
                for role, addr, suf in assigned}
     for src in sources.values():
         await src.start()
     app["placement"] = placement
+    app["assigned"] = assigned
     app["sources"] = sources
     app["trig"] = ttl.TTLTrigger(pin=16, pulse_ms=20, refractory_s=placement.trigger.refractory_s)
     app["clients"] = set()
@@ -96,6 +115,7 @@ async def on_startup(app):
 
 async def on_cleanup(app):
     app["task"].cancel()
+    app["recorder"].stop()
     for src in app["sources"].values():
         await src.stop()
     app["trig"].reset()

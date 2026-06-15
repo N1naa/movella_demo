@@ -80,12 +80,8 @@
   .gate-text .sub{color:var(--muted); font-size:12.5px; line-height:1.5}
   .gate-text .sub b{color:var(--text); font-family:var(--mono); font-weight:500}
 
-  /* refractory lockout bar */
-  .lock-wrap{margin-top:16px; height:8px; border-radius:6px;
-    background:#0f1626; overflow:hidden; position:relative}
-  .lock-fill{position:absolute; inset:0 auto 0 0; width:0;
-    background:linear-gradient(90deg,#7a5a2a,var(--lock)); transition:width .08s linear}
-  .lock-cap{margin-top:7px; font-family:var(--mono); font-size:10.5px;
+  /* refractory status line */
+  .lock-cap{margin-top:16px; font-family:var(--mono); font-size:10.5px;
     color:var(--muted); letter-spacing:.04em}
   .lock-cap b{color:var(--lock)}
 
@@ -196,7 +192,6 @@
           crossing the threshold fires one TTL pulse, then the system locks out for the refractory window</div>
       </div>
     </div>
-    <div class="lock-wrap"><div class="lock-fill" id="lock-fill"></div></div>
     <div class="lock-cap" id="lock-cap">armed · ready to fire</div>
   </section>
 
@@ -395,8 +390,7 @@ function render(s){
   }
 
   // refractory bar drains over the window
-  const lockFrac = (session && locked) ? s.lockout_remaining / (s.refractory_s || 1) : 0;
-  $('lock-fill').style.width = (100 * lockFrac) + '%';
+  // refractory status line (the bar was removed; the ring + countdown carry it)
   $('lock-cap').innerHTML = !session
     ? 'session stopped · stim disarmed'
     : locked
