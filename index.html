@@ -266,6 +266,11 @@ function unitFor(key){
   if(key === 'amag' || key.startsWith('acc')) return 'm/s\u00b2';
   return '\u00b0/s';
 }
+function traceRange(key, scale){        // fixed y-range so the 3 IMUs are directly comparable
+  if(key.startsWith('quat')) return [-1.05, 1.05];
+  const r = rangeFor(key, scale);
+  return (key === 'amag' || key === 'gmag') ? [0, r] : [-r, r];  // magnitudes ≥0, components signed
+}
 
 function tickPos(frac){                             // threshold marker on the ring arc
   const a = (-90 + 360 * Math.min(1, frac)) * Math.PI / 180;
@@ -431,8 +436,7 @@ function render(s){
     const h2 = hist[role]; h2.push(v);
     if(h2.length > HIST) h2.shift();
     if(ch.classList.contains('open')){
-      const isQuat = key.startsWith('quat');
-      drawTrace($('cv-'+role), h2, isSrc ? '#ffb02e' : '#5fb3c4', isQuat ? [-1.05,1.05] : null);
+      drawTrace($('cv-'+role), h2, isSrc ? '#ffb02e' : '#5fb3c4', traceRange(key, scale));
     }
   }
   $('rate').textContent = total.toLocaleString() + ' samples in';
