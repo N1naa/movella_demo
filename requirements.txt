@@ -1,6 +1,8 @@
 numpy
 aiohttp
 bleak
-lgpio
+# lgpio
 
 #pip install git+https://github.com/jiminghe/Xsens_DOT_PC_Reader.git
+
+# if lgpio installation fails:
