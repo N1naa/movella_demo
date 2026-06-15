@@ -1,6 +1,6 @@
 # web_demo.py — serves index.html + /ws, wrapping the simplified closed-loop.
 # Frame schema is documented at the top of index.html. Run: python web_demo.py
-import asyncio, json
+import asyncio, json, time
 from pathlib import Path
 import numpy as np
 from aiohttp import web
@@ -36,25 +36,42 @@ async def broadcast(app, frame):
             app["clients"].discard(ws)
 
 
-async def trigger_loop(app):
+async def trigger_task(app):
+    """Fire on forearm samples only. Does NOT drive the UI."""
     pl, trig, sources = app["placement"], app["trig"], app["sources"]
     feature, threshold = pl.trigger.feature, pl.trigger.threshold
-    scale = 2.5 * threshold                       # full-scale for the ring/bars; tune to taste
-    units = UNITS.get(feature, "")
     async for s in sources["forearm"].samples():
         val = infer.compute_features(s, feature)
-        fired = bool(app["session"] and val > threshold and trig.fire_if_ready(s.host_t_us))
-        if fired:
+        if app["session"] and val > threshold and trig.fire_if_ready(s.host_t_us):
             app["recorder"].write_event(trig.pulse_count, s.host_t_us, s.sensor_t_us,
                                         feature, val, threshold, trig.refractory_s)
-        remaining = max(0.0, trig.refractory_s - (s.host_t_us / 1e6 - trig.last_fire_t))
+
+
+async def broadcast_task(app):
+    """Drive the UI on a fixed timer, reading each source's .latest.
+    Decoupled from the forearm queue, so a silent sensor shows as offline
+    instead of freezing the whole page."""
+    pl, trig, sources = app["placement"], app["trig"], app["sources"]
+    feature, threshold = pl.trigger.feature, pl.trigger.threshold
+    scale = 2.5 * threshold
+    units = UNITS.get(feature, "")
+    src = sources[pl.trigger.source]
+    prev_pulses = 0
+    while True:
+        await asyncio.sleep(1 / 30)
+        latest = src.latest
+        val = infer.compute_features(latest, feature) if latest is not None else 0.0
+        fired = trig.pulse_count > prev_pulses          # a pulse happened since last frame
+        prev_pulses = trig.pulse_count
+        now_us = latest.host_t_us if latest is not None else time.time_ns() // 1000
+        remaining = max(0.0, trig.refractory_s - (now_us / 1e6 - trig.last_fire_t))
         await broadcast(app, {
             "connected": True, "gpio_mock": trig.is_mock, "session": app["session"],
             "trigger_role": pl.trigger.source, "feature": feature, "units": units,
             "threshold": threshold, "scale": scale,
             "value": val, "fired": fired, "fires": trig.pulse_count,
             "refractory_s": trig.refractory_s, "lockout_remaining": remaining,
-            "sensors": {role: sensor_dict(src) for role, src in sources.items()},
+            "sensors": {role: sensor_dict(s) for role, s in sources.items()},
         })
 
 
@@ -109,12 +126,14 @@ async def on_startup(app):
     app["sources"] = sources
     app["trig"] = ttl.TTLTrigger(pin=16, pulse_ms=20, refractory_s=placement.trigger.refractory_s)
     app["clients"] = set()
-    app["task"] = asyncio.create_task(trigger_loop(app))
+    app["tasks"] = [asyncio.create_task(trigger_task(app)),
+                    asyncio.create_task(broadcast_task(app))]
     print("Live on http://0.0.0.0:8080  (open it in a browser)")
 
 
 async def on_cleanup(app):
-    app["task"].cancel()
+    for t in app["tasks"]:
+        t.cancel()
     app["recorder"].stop()
     for src in app["sources"].values():
         await src.stop()
