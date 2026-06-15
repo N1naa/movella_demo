@@ -31,6 +31,8 @@ class TriggerConfigSimple:
     feature: str = "gyro_magnitude"
     threshold: float = 90.0  # this one used if none provided
     refractory_s: float = 8.0
+    pin: int = 16
+    pulse_ms: int = 20
 
 
 @dataclass
