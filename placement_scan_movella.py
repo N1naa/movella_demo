@@ -77,6 +77,8 @@ class Placement:
                 feature=data["trigger"]["feature"],
                 threshold=data["trigger"]["threshold"],
                 refractory_s=data["trigger"]["refractory_s"],
+                pin=data["trigger"].get("pin", 16), # default value
+                pulse_ms=data["trigger"].get("pulse_ms", 20),
             ),
         )
 
