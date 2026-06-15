@@ -10,6 +10,8 @@
     "source_role": "forearm",
     "feature": "acc_magnitude",
     "threshold": 15.0,
-    "refractory_s": 8.0
+    "refractory_s": 8.0,
+    "pulse_ms": 2000,
+    "pin": 16
   }
 }

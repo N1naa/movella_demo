@@ -230,7 +230,7 @@ class BleakMovellaSource(IMUSource):
                     gyr=d.angular_velocity.to_numpy(),
                     role=self.role,
                 )
-                print(type(d.timestamp), repr(d.timestamp)) # CHECK THIS - remove after verification
+                # print(type(d.timestamp), repr(d.timestamp)) # CHECK THIS - remove after verification
 
                 self.latest = sample
                 self.n_samples += 1 # added this

@@ -124,7 +124,7 @@ async def on_startup(app):
     app["placement"] = placement
     app["assigned"] = assigned
     app["sources"] = sources
-    app["trig"] = ttl.TTLTrigger(pin=16, pulse_ms=20, refractory_s=placement.trigger.refractory_s)
+    app["trig"] = ttl.TTLTrigger(pin=placement.trigger.pin, pulse_ms=placement.trigger.pulse_ms, refractory_s=placement.trigger.refractory_s) # CHECK THIS
     app["clients"] = set()
     app["tasks"] = [asyncio.create_task(trigger_task(app)),
                     asyncio.create_task(broadcast_task(app))]
