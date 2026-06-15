@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MAVEN — simplified closed-loop monitor</title>
+<style>
+  :root{
+    --bg:#0e1320; --panel:#151c2c; --panel-2:#1b2336; --line:#26314c;
+    --text:#e6ecf5; --muted:#8a96ad;
+    --cool:#5fb3c4;
+    --fire:#ffb02e;
+    --fire-soft:rgba(255,176,46,.16);
+    --lock:#c98a4a;
+    --rec:#e2587a;
+    --mono:ui-monospace,SFMono-Regular,Menlo,"JetBrains Mono",Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:radial-gradient(120% 100% at 50% -10%, #131b2e 0%, var(--bg) 60%);
+    color:var(--text); font-family:var(--sans);
+    -webkit-font-smoothing:antialiased; min-height:100%;
+    display:flex; justify-content:center; padding:28px 18px 40px;
+  }
+  .wrap{width:100%; max-width:780px}
+
+  header{display:flex; align-items:center; justify-content:space-between;
+    gap:16px; flex-wrap:wrap; margin-bottom:22px}
+  .brand{font-weight:650; letter-spacing:.14em; font-size:14px}
+  .brand b{color:var(--fire)}
+  .brand span{color:var(--muted); letter-spacing:.06em; font-weight:500}
+  .pills{display:flex; gap:8px; font-family:var(--mono); font-size:11px;
+    align-items:center; flex-wrap:wrap}
+  .pill{display:flex; align-items:center; gap:7px; padding:5px 11px;
+    border:1px solid var(--line); border-radius:999px; color:var(--muted)}
+  .dot{width:7px; height:7px; border-radius:50%; background:var(--muted)}
+  .pill.ok .dot{background:var(--cool); box-shadow:0 0 8px var(--cool)}
+  .pill.bad{color:var(--rec); border-color:#3a2233}
+  .pill.bad .dot{background:var(--rec)}
+  .pill.sim{color:var(--cool); border-color:#2a3a55}
+  .pill.mock{color:var(--fire); border-color:#3a3322}
+  .pill.mock .dot{background:var(--fire)}
+  .pill.real .dot{background:var(--cool); box-shadow:0 0 8px var(--cool)}
+
+  /* trigger gate — the hero */
+  .gate{position:relative; border:1px solid var(--line); border-radius:18px;
+    background:linear-gradient(180deg,var(--panel-2),var(--panel));
+    padding:26px; overflow:hidden; transition:border-color .12s, box-shadow .12s}
+  .gate.firing{border-color:var(--fire);
+    box-shadow:0 0 0 1px var(--fire) inset, 0 0 60px var(--fire-soft)}
+  .gate.lockout{border-color:#3a3322}
+  .gate .glow{position:absolute; inset:0; opacity:0; pointer-events:none;
+    background:radial-gradient(80% 120% at 50% 120%, var(--fire-soft), transparent 70%)}
+  .gate.firing .glow{opacity:1}
+  @keyframes flash{0%{opacity:1}100%{opacity:0}}
+  .gate.firing .glow{animation:flash .45s ease-out}
+  .gate-row{display:flex; align-items:center; gap:24px; position:relative}
+
+  .ring{width:108px; height:108px; flex:none}
+  .ring circle{fill:none; stroke-width:7}
+  .ring .bg{stroke:var(--line)}
+  .ring .fg{stroke:var(--cool); stroke-linecap:round;
+    transition:stroke .12s, stroke-dashoffset .08s linear; transform:rotate(-90deg);
+    transform-origin:50% 50%}
+  .gate.firing .ring .fg{stroke:var(--fire)}
+  .ring .tick{stroke:var(--text); stroke-width:2; opacity:.65}
+  .ring-label{font-family:var(--mono); font-size:21px; text-anchor:middle; fill:var(--text)}
+  .ring-unit{font-family:var(--mono); font-size:8.5px; text-anchor:middle;
+    fill:var(--muted); letter-spacing:.1em}
+
+  .gate-text{flex:1; min-width:0}
+  .gate-text .state{font-family:var(--mono); font-size:12px; letter-spacing:.22em;
+    color:var(--muted)}
+  .gate.firing .gate-text .state{color:var(--fire)}
+  .gate.lockout .gate-text .state{color:var(--lock)}
+  .gate-text .big{font-size:30px; font-weight:650; margin:2px 0 6px; letter-spacing:.02em}
+  .gate.firing .gate-text .big{color:var(--fire)}
+  .gate-text .sub{color:var(--muted); font-size:12.5px; line-height:1.5}
+  .gate-text .sub b{color:var(--text); font-family:var(--mono); font-weight:500}
+
+  /* refractory lockout bar */
+  .lock-wrap{margin-top:16px; height:8px; border-radius:6px;
+    background:#0f1626; overflow:hidden; position:relative}
+  .lock-fill{position:absolute; inset:0 auto 0 0; width:0;
+    background:linear-gradient(90deg,#7a5a2a,var(--lock)); transition:width .08s linear}
+  .lock-cap{margin-top:7px; font-family:var(--mono); font-size:10.5px;
+    color:var(--muted); letter-spacing:.04em}
+  .lock-cap b{color:var(--lock)}
+
+  /* session control */
+  .session{margin-top:16px; display:flex; align-items:center; gap:16px;
+    border:1px solid var(--line); border-radius:14px; background:var(--panel); padding:13px 16px}
+  .sess-btn{padding:10px 20px; border:1px solid var(--cool); border-radius:10px;
+    background:rgba(95,179,196,.10); color:var(--cool); font-family:var(--mono);
+    font-size:12px; letter-spacing:.1em; cursor:pointer; transition:all .15s}
+  .sess-btn:hover{background:rgba(95,179,196,.18)}
+  .sess-btn.on{border-color:var(--rec); color:var(--rec); background:rgba(226,88,122,.10)}
+  .sess-btn:focus-visible{outline:2px solid var(--cool); outline-offset:2px}
+  .sess-state{font-family:var(--mono); font-size:12px; color:var(--muted)}
+
+  /* channels */
+  .channels{margin-top:16px; display:grid; gap:10px}
+  .ch{border:1px solid var(--line); border-radius:12px; background:var(--panel);
+    overflow:hidden}
+  .ch.source{border-color:#33405f}
+  .ch.offline{opacity:.5}
+  .ch-row{display:grid; grid-template-columns:136px 1fr 78px 30px; align-items:center;
+    gap:14px; padding:12px 14px}
+  .ch .name{font-size:13px; min-width:0}
+  .ch .name small{display:block; color:var(--muted); font-size:10px;
+    letter-spacing:.12em; margin-top:2px}
+  .ch.source .name small{color:var(--fire)}
+  .ch-sel{display:block; width:100%; margin-top:6px}
+  .bar{position:relative; height:10px; border-radius:6px; background:#0f1626; overflow:hidden}
+  .bar .fill{position:absolute; inset:0 auto 0 0; width:0;
+    background:linear-gradient(90deg,#3a567a,var(--cool)); transition:width .08s linear}
+  .ch.source .bar .fill{background:linear-gradient(90deg,#7a5a2a,var(--fire))}
+  .bar .thresh{position:absolute; top:-3px; bottom:-3px; width:2px;
+    background:var(--text); opacity:.55}
+  .ch .val{font-family:var(--mono); font-size:14px; text-align:right}
+  .ch .val small{color:var(--muted); font-size:10px}
+  .chev{border:none; background:none; color:var(--muted); cursor:pointer;
+    font-size:13px; padding:4px; transition:transform .18s}
+  .ch.open .chev{transform:rotate(180deg)}
+  .chev:focus-visible{outline:2px solid var(--cool); border-radius:4px}
+  .ch-plot{display:none; padding:4px 14px 12px; border-top:1px solid var(--line)}
+  .ch.open .ch-plot{display:block}
+  .plot-head{display:flex; justify-content:space-between; align-items:center;
+    margin:8px 0 6px; font-family:var(--mono); font-size:10.5px; color:var(--muted)}
+  select{background:var(--panel-2); color:var(--text); border:1px solid var(--line);
+    border-radius:7px; font-family:var(--mono); font-size:11px; padding:3px 8px}
+  canvas{display:block; width:100%; height:84px; border-radius:8px; background:#0f1626}
+
+  /* fire log */
+  .log{margin-top:16px; border:1px solid var(--line); border-radius:14px;
+    background:var(--panel); padding:14px 16px}
+  .log-head{display:flex; justify-content:space-between; align-items:center;
+    margin-bottom:10px}
+  .log-head .t{font-size:13px}
+  .log-head .t small{display:block; color:var(--muted); font-size:10.5px;
+    letter-spacing:.1em; margin-top:2px}
+  .clr-btn{padding:5px 12px; border:1px solid var(--line); border-radius:999px;
+    background:var(--panel-2); color:var(--muted); font-family:var(--mono);
+    font-size:10.5px; cursor:pointer; letter-spacing:.08em; transition:border-color .15s}
+  .clr-btn:hover{border-color:var(--muted)}
+  .clr-btn:focus-visible{outline:2px solid var(--cool); outline-offset:2px}
+  .log-list{font-family:var(--mono); font-size:11.5px; max-height:150px;
+    overflow-y:auto; display:flex; flex-direction:column; gap:2px}
+  .log-row{display:grid; grid-template-columns:54px 70px 1fr; gap:10px;
+    padding:3px 0; color:var(--muted); border-bottom:1px solid rgba(38,49,76,.5)}
+  .log-row b{color:var(--fire); font-weight:500}
+  .log-row .lt{color:var(--text)}
+  .log-empty{color:var(--muted); padding:6px 0}
+
+  footer{margin-top:16px; display:flex; justify-content:space-between;
+    color:var(--muted); font-family:var(--mono); font-size:11px; flex-wrap:wrap; gap:8px}
+
+  @media (max-width:520px){
+    .gate-row{gap:16px}
+    .ch-row{grid-template-columns:104px 1fr 62px 26px; gap:10px}
+  }
+  @media (prefers-reduced-motion:reduce){
+    .gate.firing .glow{animation:none; opacity:.7}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand"><b>MAVEN</b> <span>· simplified closed-loop monitor</span></div>
+    <div class="pills">
+      <div class="pill" id="pill-conn"><span class="dot"></span><span id="conn">connecting</span></div>
+      <div class="pill" id="pill-gpio"><span class="dot"></span><span id="gpio">GPIO —</span></div>
+      <div class="pill" id="pill-fire"><span class="dot"></span><span id="fires">0 fires</span></div>
+    </div>
+  </header>
+
+  <section class="gate" id="gate">
+    <div class="glow"></div>
+    <div class="gate-row">
+      <svg class="ring" viewBox="0 0 120 120" aria-hidden="true">
+        <circle class="bg" cx="60" cy="60" r="50"></circle>
+        <circle class="fg" id="ring" cx="60" cy="60" r="50"
+                stroke-dasharray="314" stroke-dashoffset="314"></circle>
+        <line class="tick" id="ring-tick" x1="60" y1="6" x2="60" y2="18"></line>
+        <text class="ring-label" x="60" y="58" id="ring-val">0</text>
+        <text class="ring-unit" x="60" y="74" id="ring-unit">—</text>
+      </svg>
+      <div class="gate-text">
+        <div class="state" id="state">IDLE</div>
+        <div class="big" id="big">No signal</div>
+        <div class="sub">trigger source <b id="src">forearm</b> ·
+          <b id="feat">—</b> · threshold <b id="thr">—</b><br>
+          crossing the threshold fires one TTL pulse, then the system locks out for the refractory window</div>
+      </div>
+    </div>
+    <div class="lock-wrap"><div class="lock-fill" id="lock-fill"></div></div>
+    <div class="lock-cap" id="lock-cap">armed · ready to fire</div>
+  </section>
+
+  <section class="session">
+    <button class="sess-btn" id="sess-btn">START SESSION</button>
+    <div class="sess-state" id="sess-state">session stopped · stim disarmed</div>
+  </section>
+
+  <div class="channels" id="channels"></div>
+
+  <section class="log">
+    <div class="log-head">
+      <div class="t">Fire log
+        <small id="log-sub">TTL PULSES THIS SESSION</small></div>
+      <button class="clr-btn" id="clr-btn">CLEAR</button>
+    </div>
+    <div class="log-list" id="log-list">
+      <div class="log-empty">no pulses yet — armed and waiting</div>
+    </div>
+  </section>
+
+  <footer>
+    <div id="rate">— samples</div>
+    <div id="refr">refractory —</div>
+  </footer>
+</div>
+
+<script>
+/* ----------------------------------------------------------------------
+   Frame schema pushed over WebSocket /ws (one object per tick):
+   {
+     connected:true, gpio_mock:false,
+     trigger_role:"forearm", feature:"acc_magnitude", units:"m/s²",
+     threshold:15.0, scale:40.0,        // scale = full-scale for ring/bars
+     value:12.3, fired:false, fires:3,  // value=forearm feature; fired=pulse this tick
+     refractory_s:8.0, lockout_remaining:0.0,
+     sensors:{ role:{ online:true, n:1234,
+                      gmag:5.1, amag:9.9,
+                      gyr:[x,y,z], acc:[x,y,z], quat:[w,x,y,z] } }
+   }
+   With no backend, a clearly-labelled SIM generator drives the same render().
+---------------------------------------------------------------------- */
+
+const RING_CIRC = 2 * Math.PI * 50;
+const HIST = 600;                                  // ~20 s at 30 Hz
+const CHANNELS = [
+  ["gmag","|gyr| °/s"], ["amag","|acc| m/s²"],
+  ["gyr.0","gyr X"], ["gyr.1","gyr Y"], ["gyr.2","gyr Z"],
+  ["acc.0","acc X"], ["acc.1","acc Y"], ["acc.2","acc Z"],
+  ["quat.0","quat W"], ["quat.1","quat X"], ["quat.2","quat Y"], ["quat.3","quat Z"],
+];
+
+const $ = id => document.getElementById(id);
+const hist = {}, sel = {};                         // role -> trace ring / selected key
+let chBuilt = false, fireLog = [], wasSession = false;
+
+function setConn(state, text){                     // state: 'ok' | 'bad' | 'sim'
+  const p = $('pill-conn');
+  p.className = 'pill ' + (state === 'ok' ? 'ok' : state === 'sim' ? 'sim ok' : 'bad');
+  $('conn').textContent = text;
+}
+function pick(d, key){ const [a,i] = key.split('.'); return i === undefined ? d[a] : d[a][+i]; }
+
+function rangeFor(key, scale){          // full-scale for the row bar, per signal
+  if(key.startsWith('quat')) return 1.05;
+  if(key === 'amag' || key.startsWith('acc')) return scale;   // m/s² (≈2.5×threshold)
+  if(key === 'gmag' || key.startsWith('gyr')) return 250;     // °/s
+  return 1;
+}
+function unitFor(key){
+  if(key.startsWith('quat')) return '';
+  if(key === 'amag' || key.startsWith('acc')) return 'm/s\u00b2';
+  return '\u00b0/s';
+}
+
+function tickPos(frac){                             // threshold marker on the ring arc
+  const a = (-90 + 360 * Math.min(1, frac)) * Math.PI / 180;
+  const r1 = 44, r2 = 56;
+  return { x1: 60 + r1*Math.cos(a), y1: 60 + r1*Math.sin(a),
+           x2: 60 + r2*Math.cos(a), y2: 60 + r2*Math.sin(a) };
+}
+
+function buildChannels(sensors, srcRole, featKey){
+  const c = $('channels'); c.innerHTML = '';
+  for(const role of Object.keys(sensors)){
+    const isSrc = role === srcRole;
+    sel[role] = featKey; hist[role] = [];
+    const el = document.createElement('div');
+    el.className = 'ch' + (isSrc ? ' source' : '');
+    el.id = 'ch-' + role;
+    el.innerHTML = `
+      <div class="ch-row">
+        <div class="name">${role.replace('_',' ')}
+          <small>${isSrc ? 'TRIGGER SOURCE' : 'MONITOR'}</small>
+          <select class="ch-sel" id="sel-${role}" aria-label="${role} signal">
+            ${CHANNELS.map(([k,l])=>`<option value="${k}"${k===sel[role]?' selected':''}>${l}</option>`).join('')}
+          </select></div>
+        <div class="bar"><div class="fill" id="fill-${role}"></div>
+          ${isSrc ? '<div class="thresh" id="thrline-'+role+'"></div>' : ''}</div>
+        <div class="val"><span id="val-${role}">0</span> <small id="unit-${role}"></small></div>
+        <button class="chev" aria-label="toggle ${role} chart">▾</button>
+      </div>
+      <div class="ch-plot">
+        <div class="plot-head"><span>live trace · 20 s</span></div>
+        <canvas id="cv-${role}"></canvas>
+      </div>`;
+    c.appendChild(el);
+    el.querySelector('.chev').addEventListener('click', () => el.classList.toggle('open'));
+    el.querySelector('select').addEventListener('change', e => { sel[role] = e.target.value; hist[role] = []; });
+  }
+  chBuilt = true;
+}
+
+function drawTrace(canvas, data, color, fixedRange){
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if(canvas.width !== w*dpr){ canvas.width = w*dpr; canvas.height = h*dpr; }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,w,h);
+  if(data.length < 2) return;
+  let lo, hi;
+  if(fixedRange){ [lo,hi] = fixedRange; }
+  else{ lo = Math.min(...data); hi = Math.max(...data); const pad = (hi-lo)*0.1 || 1; lo -= pad; hi += pad; }
+  if(lo < 0 && hi > 0){
+    const y0 = h - (0-lo)/(hi-lo)*h;
+    ctx.strokeStyle = 'rgba(138,150,173,.25)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0,y0); ctx.lineTo(w,y0); ctx.stroke();
+  }
+  ctx.strokeStyle = color; ctx.lineWidth = 1.6; ctx.beginPath();
+  for(let i=0;i<data.length;i++){
+    const x = i/(HIST-1)*w, y = h - (data[i]-lo)/(hi-lo)*h;
+    i ? ctx.lineTo(x,y) : ctx.moveTo(x,y);
+  }
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(138,150,173,.8)'; ctx.font = '9px ui-monospace,monospace';
+  ctx.fillText(hi.toFixed(1), 4, 10); ctx.fillText(lo.toFixed(1), 4, h-4);
+}
+
+function renderLog(){
+  const list = $('log-list');
+  if(fireLog.length === 0){ list.innerHTML = '<div class="log-empty">no pulses yet — armed and waiting</div>'; return; }
+  list.innerHTML = fireLog.slice(-40).reverse().map(e =>
+    `<div class="log-row"><b>#${e.n}</b><span class="lt">+${e.t.toFixed(1)}s</span><span>${e.feature} = ${e.val.toFixed(1)} ${e.units}</span></div>`
+  ).join('');
+}
+$('clr-btn').addEventListener('click', () => { fireLog = []; renderLog(); });
+
+$('sess-btn').addEventListener('click', async () => {
+  const turningOn = $('sess-btn').textContent.startsWith('START');
+  try{
+    await fetch('/session', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({on: turningOn}) });
+  }catch(e){ console.error('session toggle failed', e); }
+});
+
+let t0 = null;
+function render(s){
+  if(t0 === null) t0 = performance.now()/1000;
+  const scale = s.scale || 40;
+  const frac = Math.min(1, s.value / scale);
+  const featKey = s.feature === 'gyro_magnitude' ? 'gmag' : 'amag';
+  const session = !!s.session;
+
+  // ring = forearm feature value vs full-scale; tick marks the threshold
+  $('ring').setAttribute('stroke-dashoffset', RING_CIRC * (1 - frac));
+  $('ring-val').textContent = s.value.toFixed(s.value < 100 ? 1 : 0);
+  $('ring-unit').textContent = (s.units || '').toUpperCase();
+  const tk = tickPos(s.threshold / scale);
+  const tl = $('ring-tick');
+  tl.setAttribute('x1',tk.x1); tl.setAttribute('y1',tk.y1);
+  tl.setAttribute('x2',tk.x2); tl.setAttribute('y2',tk.y2);
+
+  $('src').textContent  = s.trigger_role;
+  $('feat').textContent = s.feature;
+  $('thr').textContent  = `${(+s.threshold).toFixed(s.threshold<100?1:0)} ${s.units||''}`;
+  $('fires').textContent = `${s.fires} fires`;
+
+  // gate state machine: STOPPED > LOCKOUT > FIRING > ARMED
+  const locked = s.lockout_remaining > 0.001;
+  const gate = $('gate');
+  if(!session){
+    gate.classList.remove('firing', 'lockout');
+    $('state').textContent = 'STOPPED';
+    $('big').textContent = 'Session stopped';
+  }else{
+    gate.classList.toggle('firing', !!s.fired);
+    gate.classList.toggle('lockout', locked && !s.fired);
+    if(s.fired){
+      $('state').textContent = 'FIRING'; $('big').textContent = 'PULSE SENT';
+    }else if(locked){
+      $('state').textContent = 'LOCKOUT'; $('big').textContent = `${s.lockout_remaining.toFixed(1)} s`;
+    }else{
+      $('state').textContent = 'ARMED';
+      $('big').textContent = s.value > s.threshold ? 'OVER THRESHOLD' : 'Armed';
+    }
+  }
+
+  // refractory bar drains over the window
+  const lockFrac = (session && locked) ? s.lockout_remaining / (s.refractory_s || 1) : 0;
+  $('lock-fill').style.width = (100 * lockFrac) + '%';
+  $('lock-cap').innerHTML = !session
+    ? 'session stopped · stim disarmed'
+    : locked
+      ? `lockout · <b>${s.lockout_remaining.toFixed(1)} s</b> until re-armed · stim suppressed`
+      : 'armed · ready to fire';
+
+  // session button reflects server state
+  const sb = $('sess-btn');
+  sb.classList.toggle('on', session);
+  sb.textContent = session ? 'STOP SESSION' : 'START SESSION';
+  $('sess-state').textContent = session ? 'session running · stim armed'
+                                        : 'session stopped · stim disarmed';
+  if(session && !wasSession){ fireLog = []; t0 = performance.now()/1000; renderLog(); }
+  wasSession = session;
+
+  if(!chBuilt) buildChannels(s.sensors, s.trigger_role, featKey);
+
+  let total = 0;
+  for(const [role, d] of Object.entries(s.sensors)){
+    const ch = $('ch-'+role); if(!ch) continue;
+    ch.classList.toggle('offline', d.online === false);
+    total += d.n || 0;
+    const isSrc = role === s.trigger_role;
+    const key = sel[role];                       // per-IMU signal choice
+    const v = pick(d, key);
+    const rng = rangeFor(key, scale);
+    // value + bar reflect the selected signal; bar is |value| vs a sensible full-scale
+    $('fill-'+role).style.width = Math.min(100, 100 * Math.abs(v) / rng) + '%';
+    $('val-'+role).textContent = (typeof v === 'number' ? v.toFixed(key.startsWith('quat') ? 2 : 1) : '—');
+    $('unit-'+role).textContent = unitFor(key);
+    // threshold mark only when this row is showing the actual trigger feature
+    const t = $('thrline-'+role);
+    if(t){
+      const showThr = key === featKey;
+      t.style.display = showThr ? 'block' : 'none';
+      if(showThr) t.style.left = Math.min(100, 100 * s.threshold / rng) + '%';
+    }
+    const h2 = hist[role]; h2.push(v);
+    if(h2.length > HIST) h2.shift();
+    if(ch.classList.contains('open')){
+      const isQuat = key.startsWith('quat');
+      drawTrace($('cv-'+role), h2, isSrc ? '#ffb02e' : '#5fb3c4', isQuat ? [-1.05,1.05] : null);
+    }
+  }
+  $('rate').textContent = total.toLocaleString() + ' samples in';
+  $('refr').textContent = `refractory ${(+s.refractory_s).toFixed(0)} s`;
+
+  // gpio badge
+  const gp = $('pill-gpio');
+  gp.className = 'pill ' + (s.gpio_mock ? 'mock' : 'real');
+  $('gpio').textContent = s.gpio_mock ? 'GPIO mock' : 'GPIO live';
+
+  // append to fire log on the tick a pulse was sent
+  if(s.fired){
+    fireLog.push({ n: s.fires, t: performance.now()/1000 - t0,
+                   val: s.value, feature: s.feature, units: s.units });
+    renderLog();
+  }
+}
+
+/* ---------------- live WebSocket, with SIM fallback ---------------- */
+let usingSim = false, simTimer = null;
+
+function connect(){
+  let ws, settled = false;
+  try { ws = new WebSocket(`ws://${location.host}/ws`); }
+  catch(_){ startSim(); return; }
+
+  const giveUp = setTimeout(() => { if(!settled){ settled = true; try{ws.close();}catch(_){} startSim(); } }, 1500);
+
+  ws.onopen = () => { settled = true; clearTimeout(giveUp); stopSim(); setConn('ok','streaming'); };
+  ws.onmessage = e => { try{ render(JSON.parse(e.data)); }catch(_){} };
+  ws.onclose = () => { if(!settled){ settled = true; clearTimeout(giveUp); } startSim(); setTimeout(connect, 4000); };
+  ws.onerror = () => { try{ ws.close(); }catch(_){} };
+}
+
+/* SIM: resting forearm with periodic reaches that cross threshold and fire. */
+function startSim(){
+  if(usingSim) return;
+  usingSim = true;
+  setConn('sim','SIM · no backend');
+  const cfg = { trigger_role:'forearm', feature:'acc_magnitude', units:'m/s²',
+                threshold:15.0, scale:40.0, refractory_s:8.0 };
+  const roles = ['torso','upper_arm','forearm'];
+  const counts = { torso:0, upper_arm:0, forearm:0 };
+  let fires = 0, lastFire = -1e9, reachUntil = 0, nextReach = 2.5, peak = 0;
+  const start = performance.now()/1000;
+
+  function frame(){
+    const now = performance.now()/1000 - start;
+    if(now > nextReach){ reachUntil = now + 0.9; peak = 26 + Math.random()*10; nextReach = now + 5 + Math.random()*4; }
+    const reaching = now < reachUntil;
+    // forearm feature: resting ~9.8 (gravity) + noise; smooth bump during a reach
+    const bump = reaching ? peak * Math.sin(Math.PI * (1 - (reachUntil - now) / 0.9)) : 0;
+    const value = Math.max(0, 9.8 + (Math.random()-0.5)*1.2 + Math.max(0, bump));
+    const locked = (now - lastFire) < cfg.refractory_s;
+    const lockRem = locked ? cfg.refractory_s - (now - lastFire) : 0;
+    let fired = false;
+    if(value > cfg.threshold && !locked){ fired = true; fires++; lastFire = now; }
+
+    const sensors = {};
+    for(const r of roles){
+      counts[r] += 1;
+      const moving = r === 'forearm' ? bump : (reaching ? bump * (r === 'upper_arm' ? 0.5 : 0.18) : 0);
+      const g = 20 + moving*6 + Math.random()*8;                 // |gyr| feel
+      sensors[r] = {
+        online:true, n:counts[r],
+        gmag: g, amag: r==='forearm' ? value : 9.8 + moving*0.5 + (Math.random()-0.5),
+        gyr:[ (Math.random()-0.5)*g, (Math.random()-0.5)*g, (Math.random()-0.5)*g ],
+        acc:[ (Math.random()-0.5)*4, (Math.random()-0.5)*4, 9.8 + moving ],
+        quat:[ Math.cos(now*0.3), Math.sin(now*0.3)*0.2, Math.sin(now*0.5)*0.2, 0.1 ],
+      };
+    }
+    render({ ...cfg, connected:true, gpio_mock:true, session:true, value, fired, fires,
+             lockout_remaining: lockRem, sensors });
+  }
+  simTimer = setInterval(frame, 33);                              // ~30 Hz
+}
+function stopSim(){ if(simTimer){ clearInterval(simTimer); simTimer = null; } usingSim = false; }
+
+connect();
+</script>
+</body>
+</html>

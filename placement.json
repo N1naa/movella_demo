@@ -1,0 +1,15 @@
+{
+  "_comment": "Map each DOT to a body role. ids: 6-hex address suffix (stable MAC on Linux/Pi; rotates on macOS) and/or on-device tag. Run `python identify.py` to list. elevation axes match x-up vertical strapping on both segments; after pressing Calibrate in the UI these are replaced by pose-derived axes anyway.",
+  "gyro_units": "dps",
+  "roles": {
+    "torso":     ["65acd3"],
+    "upper_arm": ["b2c6d9"],
+    "forearm":   ["bdee3a"]
+  },
+  "trigger": {
+    "source_role": "forearm",
+    "feature": "acc_magnitude",
+    "threshold": 15.0,
+    "refractory_s": 8.0
+  }
+}
