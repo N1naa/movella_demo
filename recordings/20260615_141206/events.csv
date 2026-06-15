@@ -1,0 +1,3 @@
+pulse_n,host_t_us,sensor_t_us,feature,value,threshold,refractory_s
+1,1781547127866070,807256889,acc_magnitude,15.1753,15.0,8.0
+2,1781547143557285,823157207,acc_magnitude,19.6355,15.0,8.0

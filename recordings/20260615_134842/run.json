@@ -1,0 +1,15 @@
+{
+  "feature": "acc_magnitude",
+  "threshold": 15.0,
+  "refractory_s": 8.0,
+  "source_role": "forearm",
+  "scale": 37.5,
+  "rate_hz": 60,
+  "gpio_mock": false,
+  "roles": {
+    "torso": "005489",
+    "upper_arm": "00548d",
+    "forearm": "00319d"
+  },
+  "started": "20260615_134842"
+}
