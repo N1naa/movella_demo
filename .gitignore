@@ -1,2 +1,7 @@
 __pycache__/
 *.pyc
+analyze.ipynb
+analyze.py
+figs/
+analysis_notebooks/
+recordings/
