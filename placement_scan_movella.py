@@ -219,6 +219,10 @@ class BleakMovellaSource(IMUSource):
                 if not collected:
                     return
                 d = collected[-1]
+                # The collector never empties itself (~10k entries per sensor per run), and the
+                # list it appends to is walked on every notification. Drop it now that we have
+                # the newest sample; `d` is a reference, so it survives the clear.
+                self._sensor.data_collector.data.clear()
                 if (
                     d.quaternion is None
                     or d.acceleration is None

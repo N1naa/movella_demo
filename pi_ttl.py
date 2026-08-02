@@ -1,3 +1,4 @@
+import asyncio
 import time
 
 class LgpioGPIO:
@@ -16,6 +17,17 @@ class LgpioGPIO:
         self.pulses += 1
         print(f"  [pin {self.pin}] TTL pulse #{self.pulses} ({ms} ms)")
 
+    async def pulse_async(self, ms = 20):
+        """Same pulse without blocking the event loop. time.sleep() here is a 20 ms blackout on
+        all three BLE streams at once; asyncio.sleep() lets the notifications through."""
+        self._lg.gpio_write(self._h, self.pin, 1)
+        try:
+            await asyncio.sleep(ms / 1000.0)
+        finally:
+            self._lg.gpio_write(self._h, self.pin, 0)   # never leave the pin high on cancellation
+        self.pulses += 1
+        print(f"  [pin {self.pin}] TTL pulse #{self.pulses} ({ms} ms)")
+
     def close(self):
         try:
             self._lg.gpio_write(self._h, self.pin, 0)
@@ -30,6 +42,14 @@ class MockGPIO:
         self.pulses = 0
 
     def pulse(self, pulse_ms: int) -> None:
+        self.pulses += 1
+        print(f"  [MOCK GPIO pin {self.pin}] TTL pulse #{self.pulses} "
+              f"({pulse_ms} ms)")
+
+    async def pulse_async(self, pulse_ms: int) -> None:
+        """Mock has nothing to hold high, so it just yields for the same duration - the async
+        path must behave the same way with or without real GPIO."""
+        await asyncio.sleep(pulse_ms / 1000.0)
         self.pulses += 1
         print(f"  [MOCK GPIO pin {self.pin}] TTL pulse #{self.pulses} "
               f"({pulse_ms} ms)")
@@ -72,6 +92,22 @@ class TTLTrigger: # own class so we can keep track of last fire time and pulse c
             #self.fire_history.append((s.sensor_t_us, s.host_t_us, val))
             return True
         return False
+
+    async def fire_if_ready_async(self, now_t_us):
+        """Non-blocking twin of fire_if_ready, for callers already in the event loop.
+
+        The bookkeeping is committed BEFORE the await: the pulse now spans 20 ms of event-loop
+        time during which another notification can call this again, and a check-then-await
+        ordering would let both pass the refractory test and double-fire.
+        """
+        now_t = now_t_us / 1e6
+        if now_t - self.last_fire_t < self.refractory_s:
+            return False
+        self.last_fire_t = now_t
+        self.pulse_count += 1
+        self.fire_history.append((now_t_us, self.pulse_count))
+        await self.gpio.pulse_async(self.pulse_ms)
+        return True
 
     def reset(self):
         self.last_fire_t = -float('inf')

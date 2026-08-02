@@ -42,7 +42,7 @@ async def trigger_task(app):
     feature, threshold = pl.trigger.feature, pl.trigger.threshold
     async for s in sources["forearm"].samples():
         val = infer.compute_features(s, feature)
-        if app["session"] and val > threshold and trig.fire_if_ready(s.host_t_us):
+        if app["session"] and val > threshold and await trig.fire_if_ready_async(s.host_t_us):
             app["recorder"].write_event(trig.pulse_count, s.host_t_us, s.sensor_t_us,
                                         feature, val, threshold, trig.refractory_s)
 
