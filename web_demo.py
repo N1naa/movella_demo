@@ -121,6 +121,20 @@ async def on_startup(app):
                for role, addr, suf in assigned}
     for src in sources.values():
         await src.start()
+
+    # ----- rate gate to make sure the frequency is consistent -----
+
+    n0 = {r: s.n_samples for r, s in sources.items()}
+    await asyncio.sleep(5.0)
+    rates = {r: (s.n_samples - n0[r]) / 5.0 for r, s in sources.items()}
+    for r, hz in rates.items():
+        print(f"  {r:10s} {hz:5.1f} Hz")
+    bad = {r: hz for r, hz in rates.items() if hz < 55}
+    if bad:
+        raise RuntimeError(f"degraded stream: {bad} — reconnect all three DOTs")
+
+    # ---------------------------------------------------------------
+
     app["placement"] = placement
     app["assigned"] = assigned
     app["sources"] = sources
