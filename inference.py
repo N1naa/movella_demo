@@ -9,7 +9,9 @@ No bleak / aiohttp / lgpio here: Aligner is constructible and testable with no h
 """
 from __future__ import annotations
 
+import json
 from collections import deque
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -248,18 +250,147 @@ class Aligner:      # ring buffers + offsets -> (17, 3, 10) or None
 
 
 # ------------------ Movement Detection Block ------------------
-class Block1:  # booster + preallocated DMatrix -> p
-    def __init__(self, model_dir):
-        self.booster = xgb.Booster(); self.booster.load_model(...)
-        assert cfg["feature_names"] == features.SET85
-        self._buf = np.zeros((1, 85), dtype=np.float32)
-        self._dm  = xgb.DMatrix(self._buf)      # allocate once
-    def p(self, feats) -> float: ...
+class Block1:  # booster + preallocated buffer -> p
+    """85 features in, one P(MOVE) out. No smoothing, no threshold, no state - Decision's job.
+
+    Scoring goes through booster.inplace_predict on a preallocated row buffer, NOT a preallocated
+    DMatrix. xgb.DMatrix COPIES its input at construction, so a DMatrix built once and re-read
+    after overwriting the buffer keeps returning the prediction for whatever the buffer held at
+    construction time - with a zeroed buffer, p = 0.001321 for every window, forever. That is a
+    silent wrong answer of exactly the kind the feature-order assertion below exists to prevent.
+    inplace_predict reads the live buffer, allocates nothing per call, and is bit-identical to
+    booster.predict(xgb.DMatrix(x)) - verified to 0.0 over 5000 real windows.
+
+    The scaler is deliberately not applied: config.json says scaler_applied false, so the booster
+    was fit on raw feature values and its split thresholds are in raw units.
+    """
+
+    def __init__(self, model_dir, nthread=1):
+        import xgboost as xgb           # lazy: keeps inference importable without xgboost
+
+        model_dir = Path(model_dir)
+        cfg = json.loads((model_dir / "config.json").read_text())
+        names = list(cfg["feature_names"])
+        # booster.json carries no feature names, so this is the ONLY thing standing between a
+        # reordered extractor and confident, wrong, perfectly valid-looking probabilities.
+        if names != list(features.SET85):
+            n = min(len(names), len(features.SET85))
+            i = next((j for j in range(n) if names[j] != features.SET85[j]), n)
+            raise ValueError(
+                f"feature order mismatch at index {i}: config.json has "
+                f"{names[i] if i < len(names) else '<end>'!r}, features.SET85 has "
+                f"{features.SET85[i] if i < len(features.SET85) else '<end>'!r} "
+                f"(lengths {len(names)} vs {len(features.SET85)}). booster.json is indexed by "
+                f"this order - scoring it would produce wrong probabilities that still look valid.")
+        if cfg.get("scaler_applied", False):
+            raise ValueError("config.json has scaler_applied true; this class scores raw features. "
+                             "Re-export the bundle without --scaled, or apply the scaler upstream.")
+
+        self.booster = xgb.Booster()
+        self.booster.load_model(str(model_dir / "booster.json"))
+        if self.booster.num_features() != len(names):
+            raise ValueError(f"booster expects {self.booster.num_features()} features, "
+                             f"config.json lists {len(names)}")
+        # One row at a time: the thread pool costs more than the trees do (201 -> 90 us/call here),
+        # and on the Pi those cores are also carrying three BLE links.
+        self.booster.set_param({"nthread": int(nthread)})
+        self.n_features = len(names)
+        self._buf = np.empty((1, self.n_features))       # overwritten in place on every call
+
+    def p(self, feats) -> float:
+        """(85,) features -> P(MOVE) as a Python float."""
+        f = np.asarray(feats, dtype=float).ravel()
+        if f.size != self.n_features:
+            raise ValueError(f"expected {self.n_features} features, got {f.size}")
+        if not np.isfinite(f).all():
+            bad = np.flatnonzero(~np.isfinite(f))
+            raise ValueError(f"non-finite feature(s) at index {bad.tolist()[:5]} "
+                             f"({len(bad)} total): {[features.SET85[i] for i in bad[:5]]}")
+        self._buf[0] = f
+        return float(self.booster.inplace_predict(self._buf)[0])
 
 # ------------------ Decision Block ------------------
 
 class Decision: # k=3 smoother + arm/fire/re-arm -> bool
-    """config: smoothing_k=3, threshold=0.68, stim_ms=1000, lockout_ms=0."""
-    def update(self, p, t_us) -> bool:   # True on a rising trigger
-        ...
-    def reset(self): ...                 # on any gap > max_gap_ms
+    """config: smoothing_k=3, threshold=0.68, stim_ms=1000, lockout_ms=0.
+
+    Streaming form of src/smoothing.py::causal_moving_average followed by
+    src/events.py::rearm_triggers. Those two produced the offline event-level numbers, so this is
+    a translation of them, not a reimplementation - tests/test_decision.py::test_matches_reference
+    requires an identical fired array on random sequences.
+
+    Three behaviours are easy to assume wrongly, and all three follow rearm_triggers:
+
+      * A signal that stays above threshold fires ONCE. Re-arming needs p_smooth to fall back
+        below, so a constant 0.9 does not fire once per second - it fires at the first window and
+        then waits.
+      * A dip DURING the stimulation does not re-arm. rearm_triggers advances its index past the
+        burst and lockout, so those windows are never examined; `armed` and `stimulating` are
+        separate flags but the arm state simply does not move while the burst is running.
+      * The minimum spacing is n_stim + n_lock + 1 windows, not n_stim: re-arming consumes the
+        first window after the burst, so the earliest re-fire is 1.1 s, not 1.0 s.
+
+    Comparisons are `>= threshold` to fire and `< threshold` to re-arm, both as written.
+    A gap longer than max_gap_ms starts a new segment - the smoother restarts partial (1 value,
+    then 2, then k) and the arm state resets, exactly as the offline pair segment their arrays.
+    """
+
+    def __init__(self, cfg):
+        self.k = int(cfg["smoothing_k"])
+        self.threshold = float(cfg["threshold"])
+        self.step_ms = float(cfg["hop_ms"])
+        self.max_gap_us = int(float(cfg["max_gap_ms"]) * 1000)
+        self.n_stim = max(1, int(round(float(cfg["stim_ms"]) / self.step_ms)))
+        self.n_lock = int(round(float(cfg["lockout_ms"]) / self.step_ms))
+        self.reset()
+
+    def update(self, p: float, t_us: int) -> bool:
+        """One window probability -> True only on the window that STARTS a stimulation."""
+        if self._last_t_us is not None and t_us - self._last_t_us > self.max_gap_us:
+            self.reset()                       # new segment
+        self._last_t_us = t_us
+
+        self._buf.append(float(p))             # fewer than k at a segment start, by construction
+        self._p_smooth = sum(self._buf) / len(self._buf)
+        above = self._p_smooth >= self.threshold
+
+        if self._skip > 0:                     # inside the stimulation or the lockout
+            self._in_stim = self._stim_left > 0
+            self._stim_left = max(0, self._stim_left - 1)
+            self._skip -= 1
+            return False
+
+        if self._armed and above:
+            self._armed = False
+            self._skip = self.n_stim + self.n_lock - 1   # this window consumed the first one
+            self._stim_left = self.n_stim - 1
+            self._in_stim = True
+            return True
+
+        if not self._armed and not above:      # strict <: exactly at threshold does not re-arm
+            self._armed = True
+        self._in_stim = False
+        return False
+
+    def reset(self) -> None:                   # on any gap > max_gap_ms
+        self._buf = deque(maxlen=self.k)
+        self._p_smooth = None
+        self._armed = True
+        self._skip = 0
+        self._stim_left = 0
+        self._in_stim = False
+        self._last_t_us = None
+
+    @property
+    def p_smooth(self):
+        """The smoothed probability of the last window, or None before the first update."""
+        return self._p_smooth
+
+    @property
+    def armed(self) -> bool:
+        return self._armed
+
+    @property
+    def stimulating(self) -> bool:
+        """True while the last window processed lies inside a stimulation burst."""
+        return self._in_stim

@@ -1,0 +1,311 @@
+{
+  "name": "mvmt_det_xgb_set85",
+  "created_utc": "2026-08-01T22:24:11+00:00",
+  "git_commit": "1ccdee8",
+  "task": "binary MOVE (paretic arm) vs REST, causal, for the online VNS trigger",
+  "rate_hz": 60.0,
+  "window_ms": 200,
+  "hop_ms": 100,
+  "window_samples": 12,
+  "hop_samples": 6,
+  "window_alignment": "causal - the window ENDS at the current sample",
+  "max_gap_ms": 150,
+  "sensors_used": [
+    "forearm",
+    "upperarm",
+    "chest"
+  ],
+  "sensor_roles": {
+    "forearm": "PARETIC forearm (a2 right / b2 left), x = forearm long axis, mounted fingers -> elbow",
+    "upperarm": "PARETIC upper arm (a3 right / b3 left), x = humerus long axis",
+    "chest": "sternum (b4), x = along the torso; mounted pointing up, which is what torso_incl_mean (~0 deg upright) assumes"
+  },
+  "channels_per_sensor": [
+    "Quat_W",
+    "Quat_X",
+    "Quat_Y",
+    "Quat_Z",
+    "Acc_X",
+    "Acc_Y",
+    "Acc_Z",
+    "Gyr_X",
+    "Gyr_Y",
+    "Gyr_Z"
+  ],
+  "channel_units": {
+    "Quat_*": "unit quaternion (w,x,y,z), world Z-up",
+    "Acc_*": "m/s^2 with gravity",
+    "Gyr_*": "deg/s"
+  },
+  "magnetometer_required": false,
+  "sensor_sync": "the three streams must be sample-aligned to within half a sample (8.3 ms)",
+  "filters": {
+    "acc_gravity_free": {
+      "btype": "low",
+      "cutoff_hz": [
+        20.0
+      ],
+      "applies_to": [
+        "acc_free_x",
+        "acc_free_y",
+        "acc_free_z"
+      ],
+      "order": 4,
+      "sos": [
+        [
+          0.2346994953098306,
+          0.4693989906196612,
+          0.2346994953098306,
+          1.0,
+          0.5555237224441085,
+          0.11104744488821765
+        ],
+        [
+          1.0,
+          2.0,
+          1.0,
+          1.0,
+          0.7510814216569397,
+          0.5021628433138801
+        ]
+      ],
+      "zi_unit": [
+        [
+          0.3286115709328746,
+          0.1721452407263207
+        ],
+        [
+          0.43668893375729523,
+          0.0611482229288249
+        ]
+      ]
+    },
+    "gyr": {
+      "btype": "band",
+      "cutoff_hz": [
+        0.3,
+        8.0
+      ],
+      "applies_to": [
+        "gyr_x",
+        "gyr_y",
+        "gyr_z"
+      ],
+      "order": 4,
+      "sos": [
+        [
+          0.01113854175385861,
+          0.02227708350771722,
+          0.01113854175385861,
+          1.0,
+          -0.8514706561170118,
+          0.21247007803324242
+        ],
+        [
+          1.0,
+          2.0,
+          1.0,
+          1.0,
+          -1.0653803312863181,
+          0.5802282480218277
+        ],
+        [
+          1.0,
+          -2.0,
+          1.0,
+          1.0,
+          -1.9397058333615438,
+          0.9407911476918899
+        ],
+        [
+          1.0,
+          -2.0,
+          1.0,
+          1.0,
+          -1.9764585046065024,
+          0.9774524235854399
+        ]
+      ],
+      "zi_unit": [
+        [
+          0.11228040107695057,
+          -0.015084290660183705
+        ],
+        [
+          0.8354579512498375,
+          -0.43294851749021607
+        ],
+        [
+          -0.9588768940807448,
+          0.9588768940807388
+        ],
+        [
+          -0.0,
+          0.0
+        ]
+      ]
+    }
+  },
+  "feature_names": [
+    "forearm_acc_x_rms",
+    "forearm_acc_y_rms",
+    "forearm_acc_z_rms",
+    "forearm_gyr_x_rms",
+    "forearm_gyr_y_rms",
+    "forearm_gyr_z_rms",
+    "upperarm_acc_x_rms",
+    "upperarm_acc_y_rms",
+    "upperarm_acc_z_rms",
+    "upperarm_gyr_x_rms",
+    "upperarm_gyr_y_rms",
+    "upperarm_gyr_z_rms",
+    "chest_acc_x_rms",
+    "chest_acc_y_rms",
+    "chest_acc_z_rms",
+    "chest_gyr_x_rms",
+    "chest_gyr_y_rms",
+    "chest_gyr_z_rms",
+    "forearm_acc_mag_rms",
+    "forearm_gyr_mag_rms",
+    "forearm_acc_mag_std",
+    "forearm_gyr_mag_std",
+    "forearm_acc_mag_mean",
+    "forearm_gyr_mag_mean",
+    "forearm_acc_mag_max",
+    "forearm_gyr_mag_max",
+    "forearm_acc_mag_min",
+    "forearm_gyr_mag_min",
+    "upperarm_acc_mag_rms",
+    "upperarm_gyr_mag_rms",
+    "upperarm_acc_mag_std",
+    "upperarm_gyr_mag_std",
+    "upperarm_acc_mag_mean",
+    "upperarm_gyr_mag_mean",
+    "upperarm_acc_mag_max",
+    "upperarm_gyr_mag_max",
+    "upperarm_acc_mag_min",
+    "upperarm_gyr_mag_min",
+    "chest_acc_mag_rms",
+    "chest_gyr_mag_rms",
+    "chest_acc_mag_std",
+    "chest_gyr_mag_std",
+    "chest_acc_mag_mean",
+    "chest_gyr_mag_mean",
+    "chest_acc_mag_max",
+    "chest_gyr_mag_max",
+    "chest_acc_mag_min",
+    "chest_gyr_mag_min",
+    "forearm_ori_roll_speed",
+    "forearm_ori_pitch_speed",
+    "forearm_ori_yaw_speed",
+    "upperarm_ori_roll_speed",
+    "upperarm_ori_pitch_speed",
+    "upperarm_ori_yaw_speed",
+    "chest_ori_roll_speed",
+    "chest_ori_pitch_speed",
+    "chest_ori_yaw_speed",
+    "forearm_jerk_rms",
+    "forearm_ldlj",
+    "upperarm_jerk_rms",
+    "upperarm_ldlj",
+    "chest_jerk_rms",
+    "chest_ldlj",
+    "forearm_acc_zcr",
+    "upperarm_acc_zcr",
+    "chest_acc_zcr",
+    "elev_speed_mean",
+    "elev_speed_max",
+    "elev_speed_min",
+    "elev_speed_std",
+    "elev_speed_rms",
+    "flex_speed_mean",
+    "flex_speed_max",
+    "flex_speed_min",
+    "flex_speed_std",
+    "flex_speed_rms",
+    "fa_ua_xcorr",
+    "torso_incl_mean",
+    "forearm_pron_speed_mean",
+    "forearm_sma",
+    "elev_rom",
+    "flex_rom",
+    "forearm_vqf_speed",
+    "upperarm_vqf_speed",
+    "chest_vqf_speed"
+  ],
+  "n_features": 85,
+  "feature_order_is_binding": "booster.json and scaler.json are indexed by this order",
+  "movement_signal": {
+    "name": "gyr_perp",
+    "feeds": [
+      "forearm_vqf_speed",
+      "upperarm_vqf_speed",
+      "chest_vqf_speed"
+    ],
+    "formula": "deg2rad(sqrt(Gyr_Y^2 + Gyr_Z^2)) on the RAW (unfiltered) gyro, per sensor",
+    "units": "rad/s",
+    "needs_magnetometer": false,
+    "note": "x is the long axis in all three placements (regardless of which way along it the sensor is strapped), so y and z are the perpendicular axes. Stateless and orientation-free: no fusion filter, no convergence transient, and immune to dropped packets (no differentiation).",
+    "naming": "The three features named *_vqf_speed are the long-axis angular speed; the name is kept for column compatibility with the offline pipeline and does NOT imply VQF is used - see movement_signal for how this bundle computes them."
+  },
+  "scaler_applied": false,
+  "scaler_note": "NOT part of inference - XGBoost splits on x < t, so a monotone per-feature rescale is a no-op. scaler.json holds the training-set mean/scale so you can range-check the online features during bring-up.",
+  "model_format": "xgboost Booster.save_model JSON, binary:logistic, outputs P(MOVE)",
+  "xgboost_version": "3.2.0",
+  "smoothing_k": 3,
+  "threshold": 0.68,
+  "stim_ms": 1000,
+  "lockout_ms": 0,
+  "decision_rule": [
+    "p = booster(features)",
+    "p_smooth = mean of the last 3 window probabilities (fewer at a segment start)",
+    "while ARMED, the first window with p_smooth >= threshold starts a stim_ms stimulation",
+    "no new trigger during the stimulation or the lockout; re-arm once p_smooth < threshold",
+    "reset every filter/VQF/smoother/arm state across gaps > max_gap_ms"
+  ],
+  "reference_implementation": "src/smoothing.py::causal_moving_average + src/events.py::rearm_triggers",
+  "threshold_selection": "the only tuned decision parameter. Median of the 16 LOSO thresholds chosen by loso_smoothed(target_precision=<our VQF's mean point-wise precision on these windows, 0.745>) inside each fold's inner LOSO; folds agreed to within 0.67-0.70. Window geometry and k were fixed a priori to match the baseline, not tuned.",
+  "notes": [
+    "Feature definitions: src/windows_features.py::build_windows (_sensor_signals + _window_features). That is the spec; this config only pins the geometry, order and coefficients around it.",
+    "Per sample: acc_free = acc - R(quat)^-1 * [0,0,9.81] (Xsens onboard quat, world Z-up), computed BEFORE the 20 Hz low-pass. The raw-acc 0.5-20 Hz bandpass in preprocessing.filter_imu feeds no SET85 feature - skip it online.",
+    "Movement signal (gyr_perp): deg2rad(sqrt(Gyr_Y^2 + Gyr_Z^2)) on the RAW (unfiltered) gyro, per sensor. NO magnetometer is used anywhere in this bundle - every feature is derived from the quaternion, the accelerometer and the gyroscope only. The three features named *_vqf_speed are the long-axis angular speed; the name is kept for column compatibility with the offline pipeline and does NOT imply VQF is used - see movement_signal for how this bundle computes them.",
+    "windows_features smooths elevation/flexion with scipy uniform_filter1d(size=5), which is CENTRED: it peeks 2 samples (33 ms) ahead. This affects elev_speed_*, flex_speed_*, elev_rom, flex_rom (12 of the 85). Online, lag those channels by 2 samples or accept the mismatch. It is the only non-causal step in the extractor.",
+    "Filters are causal scipy sosfilt started from zi = zi_unit * first_sample (steady state), which is what preprocessing.apply_filter/apply_lowpass do.",
+    "booster.json stores learner_model_param.base_score as a PROBABILITY; the intercept added in margin space is its logit. A hand-written tree walker must use logit(base_score), and must not read the intercept off pred_contribs (that column is the SHAP expected value, a different number). p = 1 / (1 + exp(-(sum of leaf values + logit(base_score)))).",
+    "Reset the filter states, the probability smoother and the armed/firing state across any data gap > max_gap_ms; and drop a window whose samples span more than (window_samples-1)/rate_hz + 100 ms of wall clock."
+  ],
+  "training_data": {
+    "windows_file": null,
+    "n_windows": 174567,
+    "n_subjects": 16,
+    "move_prevalence": 0.1618,
+    "tasks": [
+      "eat",
+      "drink",
+      "shelf",
+      "ott"
+    ],
+    "refit_note": "refit on ALL subjects; the numbers below are the LOSO estimates from models trained on n-1"
+  },
+  "expected_performance": {
+    "protocol": "leave-one-subject-out, n=16, matched-precision operating point",
+    "point_wise": {
+      "precision": 0.748,
+      "sensitivity": 0.708,
+      "average_precision": 0.811
+    },
+    "event_level": {
+      "precision": 0.71,
+      "sensitivity": 0.963,
+      "stim_per_min": 8.14,
+      "median_latency_ms": 100.0,
+      "rule": "1 s burst + re-arm, TP = >=300 ms of the burst inside a movement"
+    },
+    "baseline_vqf": {
+      "point_wise_precision": 0.745,
+      "point_wise_sensitivity": 0.49,
+      "event_precision": 0.75,
+      "event_sensitivity": 0.924
+    }
+  }
+}
