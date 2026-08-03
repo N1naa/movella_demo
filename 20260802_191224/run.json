@@ -1,0 +1,23 @@
+{
+  "feature": "acc_magnitude",
+  "threshold": 15.0,
+  "refractory_s": 0.0,
+  "source_role": "forearm",
+  "scale": 37.5,
+  "rate_hz": 60,
+  "gpio_mock": false,
+  "roles": {
+    "torso": "005489",
+    "upper_arm": "00548d",
+    "forearm": "00319d"
+  },
+  "model": {
+    "name": "mvmt_det_xgb_set85",
+    "threshold": 0.68,
+    "smoothing_k": 3,
+    "stim_ms": 1000,
+    "lockout_ms": 0,
+    "us_per_call": 6214.2933720001565
+  },
+  "started": "20260802_191224"
+}
