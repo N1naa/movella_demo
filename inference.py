@@ -394,3 +394,73 @@ class Decision: # k=3 smoother + arm/fire/re-arm -> bool
     def stimulating(self) -> bool:
         """True while the last window processed lies inside a stimulation burst."""
         return self._in_stim
+
+
+# ------------------ Literature baseline (display only) ------------------
+
+LHOSTE_MAX_RATE = np.pi / 2      # their "maximum rate", rad/s - the normalisation constant
+LHOSTE_K = 3                     # "average the last three estimations"
+LHOSTE_THR_WINDOW_S = 10.0       # the dynamic threshold looks back this far
+LHOSTE_THR_PCT = 50.0            # 50th percentile of that window
+LHOSTE_THR_LO, LHOSTE_THR_HI = 0.30, 0.60    # clipped to [30%, 60%] of max normalised speed
+
+
+class Lhoste:  # forearm speed -> normalise -> smooth -> adaptive threshold -> arm/fire/re-arm
+    """The SmartVNS movement detector of Lhoste et al. (2025), streaming, for side-by-side display.
+
+    Unsupervised and calibration-free: no model, no training, one forearm signal. It is the
+    baseline the model was scored against offline (src/baselines.py, event-level config), run here
+    on the SAME windows, the same sample clock and the same stimulation logic as Block1 + Decision,
+    so the two rows in the UI differ only in how the score is produced.
+
+      1. speed  = window-mean angular speed of the forearm long axis, rad/s. That is exactly
+                  SET85's `forearm_vqf_speed`, already computed for the model, so nothing extra is
+                  extracted here (a 200 ms trailing mean every 100 ms - their step 1, verbatim).
+      2. score  = clip(speed / (pi/2), 0, 1)
+      3. smooth = mean of the last k=3 scores
+      4. thr    = 50th percentile of the last 10 s of `smooth`, clipped to [0.30, 0.60];
+                  fire where smooth exceeds thr, one 1 s burst, re-armed once it falls back below.
+
+    Step 4's arm/burst/re-arm half is delegated to a Decision with k=1 and a threshold of 0, fed
+    +/-1 for above/below - that is the same code the model path uses, so the two cannot drift
+    apart. It is fed the DECISION and not the margin (smooth - thr) because Decision fires on
+    `>=` and Lhoste's rule is a strict `>`: a margin of exactly 0 is not the rare tie it looks
+    like, since the trailing median of a slowly-varying score frequently IS the current score.
+
+    Nothing in this class touches the TTL. It is a reference reading, not a second trigger.
+    """
+
+    def __init__(self, cfg):
+        self.max_gap_us = int(float(cfg["max_gap_ms"]) * 1000)
+        # k=1 so Decision does no smoothing of its own (step 3 already did it); the threshold
+        # comparison happens here instead, because Decision cannot hold a time-varying one.
+        self.decision = Decision({**cfg, "smoothing_k": 1, "threshold": 0.0})
+        self.reset()
+
+    def update(self, speed: float, t_us: int) -> bool:
+        """One window's forearm long-axis speed (rad/s) -> True on the window that starts a burst."""
+        if self._last_t_us is not None and t_us - self._last_t_us > self.max_gap_us:
+            self.reset()                       # new segment: smoother, history and arm state restart
+        self._last_t_us = t_us
+
+        self._buf.append(float(np.clip(speed / LHOSTE_MAX_RATE, 0.0, 1.0)))     # steps 1-2
+        self.score = sum(self._buf) / len(self._buf)                            # step 3
+
+        self._hist.append((t_us, self.score))                                   # step 4
+        horizon = t_us - int(LHOSTE_THR_WINDOW_S * 1e6)
+        while self._hist and self._hist[0][0] < horizon:
+            self._hist.popleft()
+        pct = float(np.percentile([v for _, v in self._hist], LHOSTE_THR_PCT))
+        self.threshold = float(np.clip(pct, LHOSTE_THR_LO, LHOSTE_THR_HI))
+
+        self.fired = self.decision.update(1.0 if self.score > self.threshold else -1.0, t_us)
+        return self.fired
+
+    def reset(self) -> None:
+        self.decision.reset()
+        self._buf = deque(maxlen=LHOSTE_K)
+        self._hist = deque()                   # (t_us, score) over the last LHOSTE_THR_WINDOW_S
+        self._last_t_us = None
+        self.score = None                      # None until the first window is scored
+        self.threshold = None
+        self.fired = False

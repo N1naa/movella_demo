@@ -1,6 +1,7 @@
 # web_demo.py — serves index.html + /ws, wrapping the simplified closed-loop.
 # Frame schema is documented at the top of index.html. Run: python web_demo.py
 import asyncio, csv, json, os, time
+from collections import deque
 from pathlib import Path
 import numpy as np
 from aiohttp import web
@@ -50,34 +51,52 @@ async def block1_task(app):
     """
     pipe, trig = app["pipeline"], app["trig"]
     period = pipe.cfg["hop_ms"] / 1000.0
+    # Absolute deadline, not sleep(period): sleeping AFTER the work makes the period
+    # period + work, and ~33 ms of work on the Pi turned 100 ms ticks into a 133 ms median.
+    next_t = time.monotonic()
+    ticks = 0
     while True:
-        await asyncio.sleep(period)
+        next_t += period
+        now = time.monotonic()
+        if next_t < now - period:        # more than a whole period behind: skip forward rather
+            app["overruns"] += 1         # than firing a burst of back-to-back catch-up ticks
+            next_t = now
+        await asyncio.sleep(max(0.0, next_t - time.monotonic()))
+
         # time.time_ns(), NOT monotonic: it has to be the same clock domain as Sample.host_t_us,
         # and Aligner.window() raises if the two are mixed.
         now_us = time.time_ns() // 1000
-        out = pipe.tick(now_us)
-        if out is None:
-            continue
-        app["last"] = out
-        write_block1_row(app, now_us, out)
-        if out["fired"] and app["session"]:
-            await trig.fire_if_ready_async(now_us)
-            app["recorder"].write_event(trig.pulse_count, now_us, out["k"], "p_smooth",
-                                        out["p_smooth"], pipe.cfg["threshold"],
-                                        trig.refractory_s)
+        app["tick_us"] = now_us
+        for out in pipe.tick(now_us):    # every window it scored, not just the newest
+            app["last"] = out
+            queue_block1_row(app, now_us, out)
+            if out["fired"] and app["session"]:
+                await trig.fire_if_ready_async(now_us)
+                app["recorder"].write_event(trig.pulse_count, now_us, out["k"], "p_smooth",
+                                            out["p_smooth"], pipe.cfg["threshold"],
+                                            trig.refractory_s)
+        ticks += 1
+        if ticks % 10 == 0:              # drain ~once a second, off the per-tick path
+            drain_block1_rows(app)
 
 
-def write_block1_row(app, now_us, out):
-    """One CSV row per scored window, in the recorder's run dir, for offline review."""
-    entry = app.get("b1")
+def queue_block1_row(app, now_us, out):
+    """Queue one CSV row per scored window. Queue only - the write happens in drain, the same
+    trick recorder.write_sample already uses to keep I/O out of the hot path."""
+    app["b1_q"].append([now_us, out["k"], f"{out['p']:.6f}", f"{out['p_smooth']:.6f}",
+                        int(out["armed"]), int(out["stimulating"]), int(out["fired"]),
+                        f"{out['lh']:.6f}", f"{out['lh_thr']:.6f}", int(out["lh_fired"])])
+
+
+def drain_block1_rows(app):
+    entry, q = app.get("b1"), app["b1_q"]
     if entry is None:
+        q.clear()                        # no session running; nothing to write these to
         return
-    f, w, n = entry
-    w.writerow([now_us, out["k"], f"{out['p']:.6f}", f"{out['p_smooth']:.6f}",
-                int(out["armed"]), int(out["stimulating"]), int(out["fired"])])
-    if n % 10 == 0:                      # ~1 s of ticks; cheap, and this is not the BLE path
-        f.flush()
-    app["b1"] = (f, w, n + 1)
+    f, w = entry
+    while q:
+        w.writerow(q.popleft())
+    f.flush()
 
 
 async def broadcast_task(app):
@@ -118,7 +137,12 @@ async def broadcast_task(app):
             "p": d.get("p"), "p_smooth": d.get("p_smooth"),
             "armed": d.get("armed"), "stimulating": d.get("stimulating"),
             "p_threshold": app["pipeline"].cfg["threshold"],
+            # Lhoste baseline on the same windows - shown for comparison, never wired to the TTL
+            "lh": d.get("lh"), "lh_thr": d.get("lh_thr"),
+            "n_lhoste_fires": app["pipeline"].n_lhoste_fired,
             "n_scored": app["pipeline"].n_scored, "n_model_fires": app["pipeline"].n_fired,
+            "overruns": app["overruns"], "n_gap": app["pipeline"].n_gap,
+            "n_desync": app["pipeline"].n_desync, "stage_us": app["pipeline"].timings(),
             "sensors": {role: sensor_dict(s, hz.get(role, 0.0)) for role, s in sources.items()},
         })
 
@@ -162,8 +186,9 @@ async def session_handler(request):
         close_block1_csv(app)              # one per session, alongside the IMU CSVs
         f = open(run_dir / "block1.csv", "w", newline="")
         w = csv.writer(f)
-        w.writerow(["host_t_us", "k", "p", "p_smooth", "armed", "stimulating", "fired"])
-        app["b1"] = (f, w, 0)
+        w.writerow(["host_t_us", "k", "p", "p_smooth", "armed", "stimulating", "fired",
+                    "lh", "lh_thr", "lh_fired"])   # lh_* = the Lhoste baseline, logged not wired
+        app["b1"] = (f, w)
     else:
         app["recorder"].stop()
         close_block1_csv(app)
@@ -171,6 +196,7 @@ async def session_handler(request):
 
 
 def close_block1_csv(app):
+    drain_block1_rows(app)               # no lost tail rows
     entry = app.get("b1")
     if entry is not None:
         entry[0].flush()
@@ -239,6 +265,8 @@ def main():
     app["clients"] = set()
     app["session"] = False
     app["b1"] = None
+    app["b1_q"] = deque()
+    app["overruns"] = 0
     app.add_routes([web.get("/", index), web.get("/ws", ws_handler),
                     web.post("/session", session_handler)])
     app.on_startup.append(on_startup)

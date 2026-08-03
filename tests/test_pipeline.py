@@ -65,9 +65,7 @@ def stream(pipe, data, n, t0_host=1_700_000_000_000_000, tick_every=6):
             t, q, acc, gyr = data[role]
             pipe.push(Row(role, int(t[i]), int(t0_host + t[i]), q[i], acc[i], gyr[i], role))
         if i % tick_every == 0:
-            out = pipe.tick(t0_host + int(t[i]))
-            if out is not None:
-                scored.append(out)
+            scored.extend(pipe.tick(t0_host + int(t[i])))   # tick() returns EVERY window it scored
     return scored
 
 
@@ -113,6 +111,47 @@ def test_gap_resets_and_recovers():
           f"{pipe.hop}")
 
 
+def test_slow_ticks_do_not_reset():
+    """The regression from the 20260802_191224 session.
+
+    The sample stream is continuous; only the tick loop is late (180 ms instead of 100 ms, plus a
+    240 ms outlier). Nothing may reset, the stride must stay exactly hop, and the smoother must
+    never restart - a restart shows up as p_smooth == p on a row that is not the first.
+    """
+    for tick_every, tag in ((11, "183 ms"), (14, "233 ms")):
+        pipe = Block1Pipeline(MODEL_DIR, ROLES)
+        n = int(60 * FS)
+        scored = stream(pipe, synth(n, moving_from=n // 2), n, tick_every=tick_every)
+
+        assert scored, f"{tag}: nothing scored"
+        ks = np.array([s["k"] for s in scored])
+        steps = np.diff(ks)
+        assert (steps == pipe.hop).all(), \
+            f"{tag}: strides {sorted(set(steps.tolist()))}, expected only {pipe.hop}"
+        assert pipe.n_gap == 0, f"{tag}: {pipe.n_gap} gap(s) on a continuous stream"
+        assert pipe.n_desync == 0, f"{tag}: fell behind {pipe.n_desync} time(s)"
+
+        # a smoother restart makes p_smooth exactly equal p (a mean over one value)
+        restarts = [i for i, s in enumerate(scored)
+                    if i > 0 and s["p_smooth"] == s["p"]]
+        assert not restarts, f"{tag}: smoother restarted at scored windows {restarts[:5]}"
+        print(f"  slow tick {tag} ticks -> {len(scored)} windows, stride exactly {pipe.hop}, "
+              f"0 resets, 0 smoother restarts")
+
+
+def test_profile():
+    """Where the per-tick time goes. Proportions carry over to the Pi; absolutes do not."""
+    pipe = Block1Pipeline(MODEL_DIR, ROLES)
+    n = int(60 * FS)
+    stream(pipe, synth(n, moving_from=n // 2), n)
+    t = pipe.timings()
+    total = sum(t.values())
+    print(f"  profile   per scored window: " + "  ".join(
+        f"{k} {v:.0f}us ({v / total:.0%})" for k, v in t.items()) + f"   total {total:.0f}us")
+    print(f"            preprocess is {pipe.hop} rows x 3 sensors = {pipe.hop * 3} "
+          f"features.Preprocessor.push calls per window")
+
+
 def test_benchmark():
     pipe = Block1Pipeline(MODEL_DIR, ROLES)
     us = pipe.benchmark(1000)
@@ -125,5 +164,7 @@ if __name__ == "__main__":
     print("test_pipeline")
     test_runs_clean_and_hop_gated()
     test_gap_resets_and_recovers()
+    test_slow_ticks_do_not_reset()
+    test_profile()
     test_benchmark()
     print("ALL PASS")

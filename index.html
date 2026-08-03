@@ -245,6 +245,23 @@
     <canvas id="p-cv"></canvas>
   </section>
 
+  <section class="model" id="lhoste">
+    <div class="model-head">
+      <div class="t">Baseline · Lhoste threshold detector
+        <small>NORMALISED FOREARM SPEED VS ADAPTIVE THRESHOLD</small></div>
+      <div class="p"><span id="lh-val">—</span> <small id="lh-state">NO WINDOW</small></div>
+    </div>
+    <div class="pbar">
+      <div class="fill" id="lh-fill"></div>
+      <div class="thresh" id="lh-thresh"></div>
+    </div>
+    <div class="model-sub">
+      <span>threshold <b id="lh-thr">—</b></span>
+      <span>baseline fires <b id="lh-fires">0</b></span>
+      <span>reference only · does not drive the TTL</span>
+    </div>
+  </section>
+
   <div class="channels" id="channels"></div>
 
   <section class="log">
@@ -277,6 +294,9 @@
      // first window is scored (all three sensors aligned), so every reader must be null-safe.
      p:0.31, p_smooth:0.27, p_threshold:0.68, armed:true, stimulating:false,
      n_scored:912, n_model_fires:4,
+     // Lhoste baseline on the same windows: lh = normalised smoothed forearm speed [0,1],
+     // lh_thr = its adaptive threshold. Same null-until-first-window rule. Display only.
+     lh:0.12, lh_thr:0.30, n_lhoste_fires:2,
      sensors:{ role:{ online:true, n:1234,
                       gmag:5.1, amag:9.9,
                       gyr:[x,y,z], acc:[x,y,z], quat:[w,x,y,z] } }
@@ -426,6 +446,25 @@ function renderModel(s){
   drawTrace($('p-cv'), pHist, above ? '#ffb02e' : '#5fb3c4', [0, 1], thr);
 }
 
+/* Lhoste baseline row. Same bar geometry as the model panel, but the score is the normalised
+   forearm speed and the threshold moves (50th percentile of the last 10 s, clipped to
+   [0.30, 0.60]), so the marker slides. Null until the first window is scored. */
+function renderLhoste(s){
+  const el = $('lhoste');
+  const v   = (typeof s.lh === 'number') ? s.lh : null;
+  const thr = (typeof s.lh_thr === 'number') ? s.lh_thr : null;
+  const above = v !== null && thr !== null && v > thr;   // strict >, as in baselines.lhoste_predict
+
+  el.classList.toggle('hot', above);
+  el.classList.toggle('stale', v === null);
+  $('lh-val').textContent   = v === null ? '—' : v.toFixed(3);
+  $('lh-state').textContent = v === null ? 'NO WINDOW' : above ? 'MOVEMENT' : 'BELOW';
+  $('lh-thr').textContent   = thr === null ? '—' : thr.toFixed(2);
+  $('lh-fill').style.width  = (v === null ? 0 : Math.min(100, 100 * v)) + '%';
+  $('lh-thresh').style.left = (thr === null ? 0 : Math.min(100, 100 * thr)) + '%';
+  $('lh-fires').textContent = s.n_lhoste_fires || 0;
+}
+
 function renderLog(){
   const list = $('log-list');
   if(fireLog.length === 0){ list.innerHTML = '<div class="log-empty">no pulses yet — armed and waiting</div>'; return; }
@@ -503,6 +542,7 @@ function render(s){
   wasSession = session;
 
   renderModel(s);
+  renderLhoste(s);
 
   if(!chBuilt) buildChannels(s.sensors, s.trigger_role, featKey);
 
@@ -574,8 +614,9 @@ function startSim(){
   const roles = ['torso','upper_arm','forearm'];
   const counts = { torso:0, upper_arm:0, forearm:0 };
   let fires = 0, lastFire = -1e9, reachUntil = 0, nextReach = 2.5, peak = 0;
-  const pBuf = [];                                  // stand-in for Decision's k=3 smoother
+  const pBuf = [], lhBuf = [];                      // stand-ins for the two k=3 smoothers
   let nScored = 0, nModelFires = 0, wasAbove = false;
+  let nLhFires = 0, lhWasAbove = false;
   const start = performance.now()/1000;
 
   function frame(){
@@ -612,10 +653,20 @@ function startSim(){
     if(pAbove && !wasAbove) nModelFires++;           // one fire per crossing, not per frame
     wasAbove = pAbove;
 
+    // fake Lhoste score: normalised forearm speed, ~0 at rest, rising with the reach; the
+    // threshold sits at its 0.30 floor, which is where it sits on real resting data too
+    lhBuf.push(Math.min(1, Math.max(0, bump/34 + Math.random()*0.03)));
+    if(lhBuf.length > 3) lhBuf.shift();
+    const lh = lhBuf.reduce((a,b)=>a+b, 0) / lhBuf.length, lhThr = 0.30;
+    const lhAbove = lh > lhThr;
+    if(lhAbove && !lhWasAbove) nLhFires++;
+    lhWasAbove = lhAbove;
+
     render({ ...cfg, connected:true, gpio_mock:true, session:true, value, fired, fires,
              lockout_remaining: lockRem, sensors,
              p, p_smooth: pSmooth, armed: !pAbove, stimulating: pAbove,
-             n_scored: nScored, n_model_fires: nModelFires });
+             n_scored: nScored, n_model_fires: nModelFires,
+             lh, lh_thr: lhThr, n_lhoste_fires: nLhFires });
   }
   simTimer = setInterval(frame, 33);                              // ~30 Hz
 }

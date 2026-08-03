@@ -196,6 +196,47 @@ def test_matches_reference():
     print(f"  reference  30 random sequences (with gaps): smoother and fired array both identical")
 
 
+def test_lhoste_matches_reference():
+    """The same check for the Lhoste baseline row: identical smoothed score, adaptive threshold and
+    stimulation mask against baselines.lhoste_predict + rearm_triggers, on random forearm-speed
+    sequences with gaps. The stimulation MASK is compared rather than the fired onsets because a
+    burst starting on the first window of a new segment leaves the mask at 1 across the seam."""
+    from src import baselines, events
+
+    from inference import Lhoste, TICK_US
+
+    rng = np.random.default_rng(1)
+    for trial in range(30):
+        n = 400
+        speed = np.abs(rng.normal(0.02, 0.02, n))         # rad/s: rest, plus a few bursts
+        for _ in range(6):
+            s = rng.integers(0, n - 30)
+            speed[s:s + rng.integers(5, 25)] += rng.uniform(0.5, 4.0)
+        idx = np.arange(n) * 6                            # aligned sample index, one hop apart
+        if trial % 2:
+            for _ in range(3):
+                idx[rng.integers(50, n):] += 60           # a 1 s hole -> both sides must segment
+        t_us = idx * TICK_US
+        t_end = np.array(t_us * 1000, dtype="datetime64[ns]")
+
+        y, v_ref, thr_ref = baselines.lhoste_predict(t_end, speed, max_gap_ms=CFG["max_gap_ms"],
+                                                     max_rate=np.pi / 2)
+        ref = events.rearm_triggers(t_end, y.astype(bool), stim_ms=CFG["stim_ms"],
+                                    lockout_ms=CFG["lockout_ms"], step_ms=CFG["hop_ms"],
+                                    max_gap_ms=CFG["max_gap_ms"])
+        lh = Lhoste(CFG)
+        mine_v, mine_thr, mine_stim = [], [], []
+        for si, ti in zip(speed, t_us):
+            lh.update(float(si), int(ti))
+            mine_v.append(lh.score)
+            mine_thr.append(lh.threshold)
+            mine_stim.append(int(lh.decision.stimulating))
+        assert np.allclose(mine_v, v_ref), f"trial {trial}: smoothed score differs"
+        assert np.allclose(mine_thr, thr_ref), f"trial {trial}: adaptive threshold differs"
+        assert np.array_equal(mine_stim, ref), f"trial {trial}: stimulation mask differs"
+    print("  lhoste     30 random sequences (with gaps): score, threshold and stim mask identical")
+
+
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
 
 if __name__ == "__main__":
