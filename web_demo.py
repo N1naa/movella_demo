@@ -8,7 +8,6 @@ from aiohttp import web
 
 import placement_scan_movella as psm
 import pi_ttl as ttl
-import inference as infer
 import recorder as rec
 import block1_pipeline as b1p
 
@@ -19,7 +18,6 @@ CONFIG = JSONS / "placement.json"
 # (verified byte-identical). MVMT_MODEL_DIR overrides it.
 MODEL_DIR = Path(os.environ.get("MVMT_MODEL_DIR", JSONS))
 ROLES = ("forearm", "upper_arm", "torso")      # ROLES[0] is the Aligner's offset reference
-UNITS = {"acc_magnitude": "m/s\u00b2", "gyro_magnitude": "\u00b0/s"}
 
 
 def sensor_dict(src, hz=0.0):
@@ -101,22 +99,18 @@ def drain_block1_rows(app):
 
 async def broadcast_task(app):
     """Drive the UI on a fixed timer, reading each source's .latest.
-    Decoupled from the forearm queue, so a silent sensor shows as offline
+    Decoupled from the BLE queues, so a silent sensor shows as offline
     instead of freezing the whole page."""
-    pl, trig, sources = app["placement"], app["trig"], app["sources"]
-    feature, threshold = pl.trigger.feature, pl.trigger.threshold
-    scale = 2.5 * threshold
-    units = UNITS.get(feature, "")
-    src = sources[pl.trigger.source]
+    trig, sources = app["trig"], app["sources"]
     prev_pulses = 0
     marks = {role: (s.n_samples, time.monotonic()) for role, s in sources.items()}
     while True:
         await asyncio.sleep(1 / 30)
-        latest = src.latest
-        val = infer.compute_features(latest, feature) if latest is not None else 0.0
         fired = trig.pulse_count > prev_pulses          # a pulse happened since last frame
         prev_pulses = trig.pulse_count
-        now_us = latest.host_t_us if latest is not None else time.time_ns() // 1000
+        # Same clock as the fire path writes into last_fire_t (time.time_ns()//1000), so the
+        # difference is meaningful; a sensor timestamp would not be.
+        now_us = time.time_ns() // 1000
         remaining = max(0.0, trig.refractory_s - (now_us / 1e6 - trig.last_fire_t))
 
         now = time.monotonic()                          # delivered rate over the last ~1 s
@@ -129,11 +123,9 @@ async def broadcast_task(app):
         d = app.get("last") or {}
         await broadcast(app, {
             "connected": True, "gpio_mock": trig.is_mock, "session": app["session"],
-            "trigger_role": pl.trigger.source, "feature": feature, "units": units,
-            "threshold": threshold, "scale": scale,
-            "value": val, "fired": fired, "fires": trig.pulse_count,
+            "fired": fired, "fires": trig.pulse_count,
             "refractory_s": trig.refractory_s, "lockout_remaining": remaining,
-            # Block 1: the model's own state, alongside the legacy acc gauge
+            # Block 1: the model's state IS the trigger state - there is no other gauge
             "p": d.get("p"), "p_smooth": d.get("p_smooth"),
             "armed": d.get("armed"), "stimulating": d.get("stimulating"),
             "p_threshold": app["pipeline"].cfg["threshold"],
@@ -174,9 +166,8 @@ async def session_handler(request):
         rate = next(iter(app["sources"].values())).rate_hz
         cfg = app["pipeline"].cfg
         run_dir = app["recorder"].start(app["sources"].keys(), {
-            "feature": pl.trigger.feature, "threshold": pl.trigger.threshold,
-            "refractory_s": pl.trigger.refractory_s, "source_role": pl.trigger.source,
-            "scale": 2.5 * pl.trigger.threshold, "rate_hz": rate,
+            "refractory_s": pl.trigger.refractory_s, "pulse_ms": pl.trigger.pulse_ms,
+            "pin": pl.trigger.pin, "rate_hz": rate,
             "gpio_mock": app["trig"].is_mock,
             "roles": {role: suf for role, _, suf in app["assigned"]},
             "model": {"name": cfg.get("name"), "threshold": cfg["threshold"],

@@ -53,15 +53,6 @@ OFFSET_WARMUP_S = 1.0
 OFFSET_DEADBAND = 0.75        # samples
 
 
-def compute_features(sample, feature_name):
-    if feature_name == "gyro_magnitude":
-        return float(np.linalg.norm(sample.gyr)) # deg/s
-    elif feature_name == "acc_magnitude":
-        return float(np.linalg.norm(sample.acc)) # m/s²
-    else:
-        raise ValueError(f"Unknown feature: {feature_name}")
-
-
 class _SensorState:
     """Ring buffer + clock bookkeeping for one sensor."""
 

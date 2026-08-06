@@ -27,9 +27,14 @@ ROLES = ("torso", "upper_arm", "forearm")
 
 @dataclass
 class TriggerConfigSimple:
-    source: str = "forearm"
-    feature: str = "gyro_magnitude"
-    threshold: float = 90.0  # this one used if none provided
+    """The TTL output, and nothing else.
+
+    There is deliberately no feature/threshold/source here: the stimulation decision is the
+    model's (threshold on p_smooth in config.json, spaced by its stim_ms/lockout_ms), and it
+    reads all three sensors, so there is no single 'trigger source' to name. refractory_s is a
+    hardware-side ceiling on the pulse rate, independent of the model.
+    """
+
     refractory_s: float = 8.0
     pin: int = 16
     pulse_ms: int = 20
@@ -39,7 +44,7 @@ class TriggerConfigSimple:
 class Placement:
     """
     Placement just keeps track of who should be where. It:
-    - holds the config and trigger settings
+    - holds the role->device map and the TTL output settings
     - assign each dot to a role based on id
     - load itself from JSON and fail really loudly if it doesn't work
     """
@@ -48,10 +53,10 @@ class Placement:
     trigger: TriggerConfigSimple = field(default_factory=TriggerConfigSimple)
 
     def __post_init__(self):  # this is called when a dataclass is built
-        if self.trigger.source not in self.role_match:
+        unknown = [r for r in self.role_match if r not in ROLES]
+        if unknown:
             raise ValueError(
-                f"trigger source '{self.trigger.source}' "
-                f"is not a known/configured role!! {list(self.role_match)}"
+                f"unknown role(s) {unknown} in the placement map; expected {list(ROLES)}"
             )
 
     @property
@@ -75,9 +80,6 @@ class Placement:
         return cls(
             role_match=data["roles"],
             trigger=TriggerConfigSimple(
-                source=data["trigger"]["source_role"],
-                feature=data["trigger"]["feature"],
-                threshold=data["trigger"]["threshold"],
                 refractory_s=data["trigger"]["refractory_s"],
                 pin=data["trigger"].get("pin", 16), # default value
                 pulse_ms=data["trigger"].get("pulse_ms", 20),

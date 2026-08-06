@@ -7,11 +7,9 @@
     "forearm":   ["00319d"]
   },
   "trigger": {
-    "source_role": "forearm",
-    "feature": "acc_magnitude",
-    "threshold": 15.0,
+    "_comment": "TTL OUTPUT ONLY - nothing here decides a stimulation. What decides is the model: threshold on p_smooth in config.json, spaced by its stim_ms/lockout_ms. refractory_s is a hardware-side ceiling on top of that, independent of the model; 0.0 means the model's own spacing is the only limit.",
     "refractory_s": 0.0,
-    "pulse_ms": 20,
+    "pulse_ms": 1000,
     "pin": 16
   }
 }

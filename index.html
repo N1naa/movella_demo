@@ -51,6 +51,11 @@
   .gate.firing{border-color:var(--fire);
     box-shadow:0 0 0 1px var(--fire) inset, 0 0 60px var(--fire-soft)}
   .gate.lockout{border-color:#3a3322}
+  /* hot = p_smooth at/above threshold. Colours the ring without the pulse flash, so the
+     flash keeps meaning "a TTL pulse just went out" and not merely "we are over threshold". */
+  .gate.hot{border-color:#3a3322}
+  .gate.hot .ring .fg{stroke:var(--fire)}
+  .gate.hot .gate-text .state, .gate.hot .model-sub .st{color:var(--fire)}
   .gate .glow{position:absolute; inset:0; opacity:0; pointer-events:none;
     background:radial-gradient(80% 120% at 50% 120%, var(--fire-soft), transparent 70%)}
   .gate.firing .glow{opacity:1}
@@ -119,27 +124,24 @@
   .model-sub b{color:var(--text); font-weight:500}
   .model-sub .st{color:var(--cool)}
   .model.hot .model-sub .st{color:var(--fire)}
-  .model canvas{margin-top:11px; height:72px}
+  .model canvas, .gate canvas{margin-top:11px; height:72px}
+  .gate .model-sub{margin-top:16px}
+  .gate.firing .model-sub .st{color:var(--fire)}
 
   /* channels */
   .channels{margin-top:16px; display:grid; gap:10px}
   .ch{border:1px solid var(--line); border-radius:12px; background:var(--panel);
     overflow:hidden}
-  .ch.source{border-color:#33405f}
   .ch.offline{opacity:.5}
   .ch-row{display:grid; grid-template-columns:136px 1fr 78px 30px; align-items:center;
     gap:14px; padding:12px 14px}
   .ch .name{font-size:13px; min-width:0}
   .ch .name small{display:block; color:var(--muted); font-size:10px;
     letter-spacing:.12em; margin-top:2px}
-  .ch.source .name small{color:var(--fire)}
   .ch-sel{display:block; width:100%; margin-top:6px}
   .bar{position:relative; height:10px; border-radius:6px; background:#0f1626; overflow:hidden}
   .bar .fill{position:absolute; inset:0 auto 0 0; width:0;
     background:linear-gradient(90deg,#3a567a,var(--cool)); transition:width .08s linear}
-  .ch.source .bar .fill{background:linear-gradient(90deg,#7a5a2a,var(--fire))}
-  .bar .thresh{position:absolute; top:-3px; bottom:-3px; width:2px;
-    background:var(--text); opacity:.55}
   .ch .val{font-family:var(--mono); font-size:14px; text-align:right}
   .ch .val small{color:var(--muted); font-size:10px}
   .chev{border:none; background:none; color:var(--muted); cursor:pointer;
@@ -206,43 +208,30 @@
         <circle class="fg" id="ring" cx="60" cy="60" r="50"
                 stroke-dasharray="314" stroke-dashoffset="314"></circle>
         <line class="tick" id="ring-tick" x1="60" y1="6" x2="60" y2="18"></line>
-        <text class="ring-label" x="60" y="58" id="ring-val">0</text>
-        <text class="ring-unit" x="60" y="74" id="ring-unit">—</text>
+        <text class="ring-label" x="60" y="58" id="ring-val">—</text>
+        <text class="ring-unit" x="60" y="74" id="ring-unit">P(MOVE)</text>
       </svg>
       <div class="gate-text">
         <div class="state" id="state">IDLE</div>
-        <div class="big" id="big">No signal</div>
-        <div class="sub">trigger source <b id="src">forearm</b> ·
-          <b id="feat">—</b> · threshold <b id="thr">—</b><br>
-          crossing the threshold fires one TTL pulse, then the system locks out for the refractory window</div>
+        <div class="big" id="big">No window</div>
+        <div class="sub">Block 1 · p_smooth vs threshold <b id="thr">—</b> ·
+          raw p <b id="p-raw">—</b><br>
+          the first window at or above threshold fires one TTL pulse; re-arming needs p_smooth
+          to fall back below it</div>
       </div>
     </div>
+    <div class="model-sub">
+      <span class="st" id="p-arm">—</span>
+      <span>scored <b id="p-n">0</b></span>
+      <span>model fires <b id="p-fires">0</b></span>
+    </div>
+    <canvas id="p-cv"></canvas>
     <div class="lock-cap" id="lock-cap">armed · ready to fire</div>
   </section>
 
   <section class="session">
     <button class="sess-btn" id="sess-btn">START SESSION</button>
     <div class="sess-state" id="sess-state">session stopped · stim disarmed</div>
-  </section>
-
-  <section class="model" id="model">
-    <div class="model-head">
-      <div class="t">Block 1 · movement model
-        <small>SMOOTHED P(MOVE) VS THRESHOLD</small></div>
-      <div class="p"><span id="p-val">—</span> <small id="p-state">NO WINDOW</small></div>
-    </div>
-    <div class="pbar">
-      <div class="fill" id="p-fill"></div>
-      <div class="thresh" id="p-thresh"></div>
-    </div>
-    <div class="model-sub">
-      <span>threshold <b id="p-thr">—</b></span>
-      <span>raw p <b id="p-raw">—</b></span>
-      <span class="st" id="p-arm">—</span>
-      <span>scored <b id="p-n">0</b></span>
-      <span>model fires <b id="p-fires">0</b></span>
-    </div>
-    <canvas id="p-cv"></canvas>
   </section>
 
   <section class="model" id="lhoste">
@@ -286,12 +275,11 @@
    Frame schema pushed over WebSocket /ws (one object per tick):
    {
      connected:true, gpio_mock:false,
-     trigger_role:"forearm", feature:"acc_magnitude", units:"m/s²",
-     threshold:15.0, scale:40.0,        // scale = full-scale for ring/bars
-     value:12.3, fired:false, fires:3,  // value=forearm feature; fired=pulse this tick
-     refractory_s:8.0, lockout_remaining:0.0,
-     // Block 1: the model's own state. p/p_smooth/armed/stimulating are null until the
-     // first window is scored (all three sensors aligned), so every reader must be null-safe.
+     fired:false, fires:3,              // fired = a TTL pulse went out on this tick
+     refractory_s:0.0, lockout_remaining:0.0,   // TTL-side ceiling only, not the model's spacing
+     // Block 1 IS the trigger: p_smooth vs p_threshold is what fires the pulse. There is no
+     // separate acc/gyro gauge any more. p/p_smooth/armed/stimulating are null until the first
+     // window is scored (all three sensors aligned), so every reader must be null-safe.
      p:0.31, p_smooth:0.27, p_threshold:0.68, armed:true, stimulating:false,
      n_scored:912, n_model_fires:4,
      // Lhoste baseline on the same windows: lh = normalised smoothed forearm speed [0,1],
@@ -306,6 +294,7 @@
 
 const RING_CIRC = 2 * Math.PI * 50;
 const HIST = 600;                                  // ~20 s at 30 Hz
+const ACC_FS = 40;                                 // m/s² full-scale for the acc row bars/traces
 const CHANNELS = [
   ["gmag","|gyr| °/s"], ["amag","|acc| m/s²"],
   ["gyr.0","gyr X"], ["gyr.1","gyr Y"], ["gyr.2","gyr Z"],
@@ -324,9 +313,9 @@ function setConn(state, text){                     // state: 'ok' | 'bad' | 'sim
 }
 function pick(d, key){ const [a,i] = key.split('.'); return i === undefined ? d[a] : d[a][+i]; }
 
-function rangeFor(key, scale){          // full-scale for the row bar, per signal
+function rangeFor(key){                 // full-scale for the row bar, per signal
   if(key.startsWith('quat')) return 1.05;
-  if(key === 'amag' || key.startsWith('acc')) return scale;   // m/s² (≈2.5×threshold)
+  if(key === 'amag' || key.startsWith('acc')) return ACC_FS;  // m/s²
   if(key === 'gmag' || key.startsWith('gyr')) return 250;     // °/s
   return 1;
 }
@@ -335,9 +324,9 @@ function unitFor(key){
   if(key === 'amag' || key.startsWith('acc')) return 'm/s\u00b2';
   return '\u00b0/s';
 }
-function traceRange(key, scale){        // fixed y-range so the 3 IMUs are directly comparable
+function traceRange(key){               // fixed y-range so the 3 IMUs are directly comparable
   if(key.startsWith('quat')) return [-1.05, 1.05];
-  const r = rangeFor(key, scale);
+  const r = rangeFor(key);
   return (key === 'amag' || key === 'gmag') ? [0, r] : [-r, r];  // magnitudes ≥0, components signed
 }
 
@@ -348,23 +337,23 @@ function tickPos(frac){                             // threshold marker on the r
            x2: 60 + r2*Math.cos(a), y2: 60 + r2*Math.sin(a) };
 }
 
-function buildChannels(sensors, srcRole, featKey){
+/* Raw-signal monitors. All three rows are equal now: the model reads all three sensors, so
+   there is no 'trigger source' to single out and no threshold to mark on these bars. */
+function buildChannels(sensors){
   const c = $('channels'); c.innerHTML = '';
   for(const role of Object.keys(sensors)){
-    const isSrc = role === srcRole;
-    sel[role] = featKey; hist[role] = [];
+    sel[role] = 'amag'; hist[role] = [];
     const el = document.createElement('div');
-    el.className = 'ch' + (isSrc ? ' source' : '');
+    el.className = 'ch';
     el.id = 'ch-' + role;
     el.innerHTML = `
       <div class="ch-row">
         <div class="name">${role.replace('_',' ')}
-          <small>${isSrc ? 'TRIGGER SOURCE' : 'MONITOR'}</small>
+          <small>MONITOR</small>
           <select class="ch-sel" id="sel-${role}" aria-label="${role} signal">
             ${CHANNELS.map(([k,l])=>`<option value="${k}"${k===sel[role]?' selected':''}>${l}</option>`).join('')}
           </select></div>
-        <div class="bar"><div class="fill" id="fill-${role}"></div>
-          ${isSrc ? '<div class="thresh" id="thrline-'+role+'"></div>' : ''}</div>
+        <div class="bar"><div class="fill" id="fill-${role}"></div></div>
         <div class="val"><span id="val-${role}">0</span> <small id="unit-${role}"></small></div>
         <button class="chev" aria-label="toggle ${role} chart">▾</button>
       </div>
@@ -416,36 +405,6 @@ function drawTrace(canvas, data, color, fixedRange, thresh){
   ctx.fillText(hi.toFixed(1), 4, 10); ctx.fillText(lo.toFixed(1), 4, h-4);
 }
 
-/* Block 1 panel. p_smooth is the k-window causal mean the Decision block actually thresholds,
-   so it — not the raw p — is what the bar, the trace and the OVER THRESHOLD state read.
-   It advances at hop_ms (10 Hz) while frames arrive at 30 Hz, so the trace is a stair, and it
-   stays null until the aligner has a full window on all three sensors. */
-let pHist = [];
-function renderModel(s){
-  const el = $('model');
-  const thr = (typeof s.p_threshold === 'number') ? s.p_threshold : 0.68;
-  const ps  = (typeof s.p_smooth === 'number') ? s.p_smooth : null;
-  const above = ps !== null && ps >= thr;          // >= to fire, as in inference.Decision
-
-  el.classList.toggle('hot', above);
-  el.classList.toggle('stale', ps === null);
-  $('p-val').textContent   = ps === null ? '—' : ps.toFixed(3);
-  $('p-state').textContent = ps === null ? 'NO WINDOW'
-                           : s.stimulating ? 'STIMULATING'
-                           : above ? 'OVER THRESHOLD' : 'BELOW';
-  $('p-raw').textContent   = (typeof s.p === 'number') ? s.p.toFixed(3) : '—';
-  $('p-thr').textContent   = thr.toFixed(2);
-  $('p-fill').style.width  = (ps === null ? 0 : Math.min(100, 100 * ps)) + '%';
-  $('p-thresh').style.left = Math.min(100, 100 * thr) + '%';
-  $('p-arm').textContent   = s.armed === undefined || s.armed === null ? '—'
-                           : s.armed ? 'armed' : 'waiting to re-arm';
-  $('p-n').textContent     = (s.n_scored || 0).toLocaleString();
-  $('p-fires').textContent = s.n_model_fires || 0;
-
-  if(ps !== null){ pHist.push(ps); if(pHist.length > HIST) pHist.shift(); }
-  drawTrace($('p-cv'), pHist, above ? '#ffb02e' : '#5fb3c4', [0, 1], thr);
-}
-
 /* Lhoste baseline row. Same bar geometry as the model panel, but the score is the normalised
    forearm speed and the threshold moves (50th percentile of the last 10 s, clipped to
    [0.30, 0.60]), so the marker slides. Null until the first window is scored. */
@@ -469,7 +428,7 @@ function renderLog(){
   const list = $('log-list');
   if(fireLog.length === 0){ list.innerHTML = '<div class="log-empty">no pulses yet — armed and waiting</div>'; return; }
   list.innerHTML = fireLog.slice(-40).reverse().map(e =>
-    `<div class="log-row"><b>#${e.n}</b><span class="lt">+${e.t.toFixed(1)}s</span><span>${e.feature} = ${e.val.toFixed(1)} ${e.units}</span></div>`
+    `<div class="log-row"><b>#${e.n}</b><span class="lt">+${e.t.toFixed(1)}s</span><span>p_smooth = ${e.val === null ? '—' : e.val.toFixed(3)}</span></div>`
   ).join('');
 }
 $('clr-btn').addEventListener('click', () => { fireLog = []; renderLog(); });
@@ -482,45 +441,57 @@ $('sess-btn').addEventListener('click', async () => {
   }catch(e){ console.error('session toggle failed', e); }
 });
 
+/* p_smooth is the k-window causal mean Decision actually thresholds, so it — not the raw p —
+   drives the ring, the trace and the state word. It advances at hop_ms (10 Hz) while frames
+   arrive at 30 Hz, so the trace is a stair, and it stays null until the aligner has a full
+   window on all three sensors. */
+let pHist = [];
 let t0 = null;
 function render(s){
   if(t0 === null) t0 = performance.now()/1000;
-  const scale = s.scale || 40;
-  const frac = Math.min(1, s.value / scale);
-  const featKey = s.feature === 'gyro_magnitude' ? 'gmag' : 'amag';
   const session = !!s.session;
+  const thr = (typeof s.p_threshold === 'number') ? s.p_threshold : 0.68;
+  const ps  = (typeof s.p_smooth === 'number') ? s.p_smooth : null;
+  const above = ps !== null && ps >= thr;          // >= to fire, as in inference.Decision
 
-  // ring = forearm feature value vs full-scale; tick marks the threshold
-  $('ring').setAttribute('stroke-dashoffset', RING_CIRC * (1 - frac));
-  $('ring-val').textContent = s.value.toFixed(s.value < 100 ? 1 : 0);
-  $('ring-unit').textContent = (s.units || '').toUpperCase();
-  const tk = tickPos(s.threshold / scale);
+  // ring = p_smooth on a fixed 0..1 scale; tick marks the model threshold
+  $('ring').setAttribute('stroke-dashoffset', RING_CIRC * (1 - (ps === null ? 0 : Math.min(1, ps))));
+  $('ring-val').textContent = ps === null ? '—' : ps.toFixed(2);
+  const tk = tickPos(thr);
   const tl = $('ring-tick');
   tl.setAttribute('x1',tk.x1); tl.setAttribute('y1',tk.y1);
   tl.setAttribute('x2',tk.x2); tl.setAttribute('y2',tk.y2);
 
-  $('src').textContent  = s.trigger_role;
-  $('feat').textContent = s.feature;
-  $('thr').textContent  = `${(+s.threshold).toFixed(s.threshold<100?1:0)} ${s.units||''}`;
-  $('fires').textContent = `${s.fires} fires`;
+  $('thr').textContent   = thr.toFixed(2);
+  $('p-raw').textContent = (typeof s.p === 'number') ? s.p.toFixed(3) : '—';
+  $('p-arm').textContent = s.armed === undefined || s.armed === null ? '—'
+                         : s.armed ? 'armed' : 'waiting to re-arm';
+  $('p-n').textContent     = (s.n_scored || 0).toLocaleString();
+  $('p-fires').textContent = s.n_model_fires || 0;
+  $('fires').textContent   = `${s.fires} fires`;
 
-  // gate state machine: STOPPED > LOCKOUT > FIRING > ARMED
+  // gate state machine: STOPPED > FIRING > LOCKOUT > STIMULATING > OVER THRESHOLD > ARMED
   const locked = s.lockout_remaining > 0.001;
   const gate = $('gate');
   if(!session){
-    gate.classList.remove('firing', 'lockout');
+    gate.classList.remove('firing', 'lockout', 'hot');
     $('state').textContent = 'STOPPED';
     $('big').textContent = 'Session stopped';
   }else{
     gate.classList.toggle('firing', !!s.fired);
+    gate.classList.toggle('hot', above && !s.fired);
     gate.classList.toggle('lockout', locked && !s.fired);
     if(s.fired){
       $('state').textContent = 'FIRING'; $('big').textContent = 'PULSE SENT';
     }else if(locked){
       $('state').textContent = 'LOCKOUT'; $('big').textContent = `${s.lockout_remaining.toFixed(1)} s`;
+    }else if(s.stimulating){
+      $('state').textContent = 'STIMULATING'; $('big').textContent = 'Stim running';
+    }else if(ps === null){
+      $('state').textContent = 'NO WINDOW'; $('big').textContent = 'Waiting for alignment';
     }else{
       $('state').textContent = 'ARMED';
-      $('big').textContent = s.value > s.threshold ? 'OVER THRESHOLD' : 'Armed';
+      $('big').textContent = above ? 'OVER THRESHOLD' : 'Armed';
     }
   }
 
@@ -541,35 +512,28 @@ function render(s){
   if(session && !wasSession){ fireLog = []; pHist = []; t0 = performance.now()/1000; renderLog(); }
   wasSession = session;
 
-  renderModel(s);
+  if(ps !== null){ pHist.push(ps); if(pHist.length > HIST) pHist.shift(); }
+  drawTrace($('p-cv'), pHist, above ? '#ffb02e' : '#5fb3c4', [0, 1], thr);
   renderLhoste(s);
 
-  if(!chBuilt) buildChannels(s.sensors, s.trigger_role, featKey);
+  if(!chBuilt) buildChannels(s.sensors);
 
   let total = 0;
   for(const [role, d] of Object.entries(s.sensors)){
     const ch = $('ch-'+role); if(!ch) continue;
     ch.classList.toggle('offline', d.online === false);
     total += d.n || 0;
-    const isSrc = role === s.trigger_role;
     const key = sel[role];                       // per-IMU signal choice
     const v = pick(d, key);
-    const rng = rangeFor(key, scale);
+    const rng = rangeFor(key);
     // value + bar reflect the selected signal; bar is |value| vs a sensible full-scale
     $('fill-'+role).style.width = Math.min(100, 100 * Math.abs(v) / rng) + '%';
     $('val-'+role).textContent = (typeof v === 'number' ? v.toFixed(key.startsWith('quat') ? 2 : 1) : '—');
     $('unit-'+role).textContent = unitFor(key);
-    // threshold mark only when this row is showing the actual trigger feature
-    const t = $('thrline-'+role);
-    if(t){
-      const showThr = key === featKey;
-      t.style.display = showThr ? 'block' : 'none';
-      if(showThr) t.style.left = Math.min(100, 100 * s.threshold / rng) + '%';
-    }
     const h2 = hist[role]; h2.push(v);
     if(h2.length > HIST) h2.shift();
     if(ch.classList.contains('open')){
-      drawTrace($('cv-'+role), h2, isSrc ? '#ffb02e' : '#5fb3c4', traceRange(key, scale));
+      drawTrace($('cv-'+role), h2, '#5fb3c4', traceRange(key));
     }
   }
   $('rate').textContent = total.toLocaleString() + ' samples in';
@@ -582,8 +546,7 @@ function render(s){
 
   // append to fire log on the tick a pulse was sent
   if(s.fired){
-    fireLog.push({ n: s.fires, t: performance.now()/1000 - t0,
-                   val: s.value, feature: s.feature, units: s.units });
+    fireLog.push({ n: s.fires, t: performance.now()/1000 - t0, val: ps });
     renderLog();
   }
 }
@@ -604,13 +567,12 @@ function connect(){
   ws.onerror = () => { try{ ws.close(); }catch(_){} };
 }
 
-/* SIM: resting forearm with periodic reaches that cross threshold and fire. */
+/* SIM: resting forearm with periodic reaches that push p_smooth over threshold and fire. */
 function startSim(){
   if(usingSim) return;
   usingSim = true;
   setConn('sim','SIM · no backend');
-  const cfg = { trigger_role:'forearm', feature:'acc_magnitude', units:'m/s²',
-                threshold:15.0, scale:40.0, refractory_s:8.0, p_threshold:0.68 };
+  const cfg = { refractory_s:0.0, p_threshold:0.68 };
   const roles = ['torso','upper_arm','forearm'];
   const counts = { torso:0, upper_arm:0, forearm:0 };
   let fires = 0, lastFire = -1e9, reachUntil = 0, nextReach = 2.5, peak = 0;
@@ -623,13 +585,10 @@ function startSim(){
     const now = performance.now()/1000 - start;
     if(now > nextReach){ reachUntil = now + 0.9; peak = 26 + Math.random()*10; nextReach = now + 5 + Math.random()*4; }
     const reaching = now < reachUntil;
-    // forearm feature: resting ~9.8 (gravity) + noise; smooth bump during a reach
+    // resting |acc| ~9.8 (gravity) + noise; smooth bump during a reach, shared by p and the rows
     const bump = reaching ? peak * Math.sin(Math.PI * (1 - (reachUntil - now) / 0.9)) : 0;
     const value = Math.max(0, 9.8 + (Math.random()-0.5)*1.2 + Math.max(0, bump));
-    const locked = (now - lastFire) < cfg.refractory_s;
-    const lockRem = locked ? cfg.refractory_s - (now - lastFire) : 0;
-    let fired = false;
-    if(value > cfg.threshold && !locked){ fired = true; fires++; lastFire = now; }
+    const lockRem = Math.max(0, cfg.refractory_s - (now - lastFire));
 
     const sensors = {};
     for(const r of roles){
@@ -650,7 +609,9 @@ function startSim(){
     const pSmooth = pBuf.reduce((a,b)=>a+b, 0) / pBuf.length;
     nScored++;
     const pAbove = pSmooth >= cfg.p_threshold;
-    if(pAbove && !wasAbove) nModelFires++;           // one fire per crossing, not per frame
+    // fire on the CROSSING only, like Decision: staying above threshold fires once
+    const fired = pAbove && !wasAbove;
+    if(fired){ nModelFires++; fires++; lastFire = now; }
     wasAbove = pAbove;
 
     // fake Lhoste score: normalised forearm speed, ~0 at rest, rising with the reach; the
@@ -662,7 +623,7 @@ function startSim(){
     if(lhAbove && !lhWasAbove) nLhFires++;
     lhWasAbove = lhAbove;
 
-    render({ ...cfg, connected:true, gpio_mock:true, session:true, value, fired, fires,
+    render({ ...cfg, connected:true, gpio_mock:true, session:true, fired, fires,
              lockout_remaining: lockRem, sensors,
              p, p_smooth: pSmooth, armed: !pAbove, stimulating: pAbove,
              n_scored: nScored, n_model_fires: nModelFires,
