@@ -34,8 +34,14 @@ class Recorder:
             self._imu[role] = (f, w)
         self._ev_f = open(self.run_dir / "events.csv", "w", newline="")
         self._ev_w = csv.writer(self._ev_f)
-        self._ev_w.writerow(["pulse_n", "host_t_us", "sensor_t_us",
-                             "feature", "value", "threshold", "refractory_s"])
+        # Column 3 used to be HEADED sensor_t_us while holding the window index k (web_demo
+        # passes out["k"]) - a timestamp name on an index, which read as a device clock and is
+        # not one. It is now named `k`; the two appended columns are the real timestamps.
+        # Existing columns keep their names AND their positions, so a reader that indexes
+        # positionally still works on both schemas.
+        self._ev_w.writerow(["pulse_n", "host_t_us", "k",
+                             "feature", "value", "threshold", "refractory_s",
+                             "sensor_t_us", "t_gpio_us"])
         (self.run_dir / "run.json").write_text(json.dumps({**config, "started": ts}, indent=2))
         self._q.clear()
         self.active = True
@@ -77,11 +83,26 @@ class Recorder:
             self._drain_once()
             await asyncio.sleep(DRAIN_PERIOD_S)
 
-    def write_event(self, pulse_n, host_t_us, sensor_t_us, feature, value, threshold, refractory_s):
+    def write_event(self, pulse_n, host_t_us, k, feature, value, threshold, refractory_s,
+                    sensor_t_us=None, t_gpio_us=None):
+        """One delivered stimulation pulse.
+
+        k           aligned window index the decision was made on - joins block1.csv on `k`.
+        sensor_t_us the reference IMU's raw device counter for that window's last sample -
+                    joins imu_<ref>.csv on `sensor_t_us`. None if the window had already been
+                    evicted from the aligner's ring buffer.
+        t_gpio_us   epoch us of the TTL RISING EDGE, or None when the trigger declined the fire
+                    (refractory). An empty cell here therefore means NO PULSE WAS DELIVERED even
+                    though the row exists - the caller logs unconditionally, so this column is
+                    what distinguishes a delivered pulse from a suppressed one.
+        The trailing two are keyword-defaulted so a caller written against the old 7-argument
+        signature still works and simply leaves them blank."""
         if not self.active or self._ev_w is None:
             return
-        self._ev_w.writerow([pulse_n, host_t_us, sensor_t_us,
-                             feature, f"{value:.4f}", threshold, refractory_s])
+        self._ev_w.writerow([pulse_n, host_t_us, k,
+                             feature, f"{value:.4f}", threshold, refractory_s,
+                             "" if sensor_t_us is None else int(sensor_t_us),
+                             "" if t_gpio_us is None else int(t_gpio_us)])
         self._ev_f.flush()        # events are rare; flush so they survive a crash
 
     def stop(self):

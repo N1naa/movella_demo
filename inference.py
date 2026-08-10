@@ -59,6 +59,7 @@ class _SensorState:
     def __init__(self, cap):
         self.cap = cap
         self.rows = {}            # sample index (own clock, unshifted) -> (10,) float row
+        self.raw_t = {}           # same key -> that sample's RAW sensor_t_us, evicted with rows
         self.prev_raw = None      # last RAW sensor_t_us, for wrap detection
         self.wraps = 0            # how many times the 32-bit counter has wrapped
         self.t0 = None            # first unwrapped sensor_t_us; the index is relative to it
@@ -151,9 +152,16 @@ class Aligner:      # ring buffers + offsets -> (17, 3, 10) or None
         st.rows[idx] = np.concatenate([np.asarray(sample.quat, float),
                                        np.asarray(sample.acc, float),
                                        np.asarray(sample.gyr, float)])
+        # Keep the RAW (still-wrapped) counter beside the row. Storing it is what lets a scored
+        # window carry a real device timestamp; reconstructing one as t0 + idx * TICK_US instead
+        # would drift, because TICK_US is a rounded integer and the residual accumulates to
+        # ~100 ms over an 80 min session - enough to mis-join by several samples.
+        st.raw_t[idx] = raw
         st.last_idx = idx if st.last_idx is None else max(st.last_idx, idx)
         while len(st.rows) > self.cap:
-            st.rows.pop(min(st.rows))
+            oldest = min(st.rows)
+            st.rows.pop(oldest)
+            st.raw_t.pop(oldest, None)
 
     def _recompute_offsets(self):
         """Integer sample shift per sensor, relative to roles[0], from the rolling min offset."""
@@ -225,6 +233,17 @@ class Aligner:      # ring buffers + offsets -> (17, 3, 10) or None
                 out[ti, si] = rows[a - sh]
         self.last_end_index = k
         return out
+
+    def sensor_t_us_at(self, k):
+        """The REFERENCE sensor's raw sensor_t_us at aligned index k, or None if not buffered.
+
+        roles[0] is the offset reference, so its shift is always 0 (_recompute_offsets measures
+        every offset against it) and k IS its own sample index - no un-shifting needed. The value
+        returned is the wrapped 32-bit counter exactly as recorder.py writes it into
+        imu_<ref>.csv, so a logged window joins that file directly, with no reconstruction and no
+        assumption about how long the app had been streaming before recording started.
+        """
+        return self.state[self.ref_role].raw_t.get(int(k))
 
     def gap_detected(self) -> bool:
         """True once per gap (any sensor skipping more than max_gap_ms of samples), then clears."""

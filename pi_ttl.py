@@ -9,8 +9,14 @@ class LgpioGPIO:
         self._h = lgpio.gpiochip_open(0)
         lgpio.gpio_claim_output(self._h, pin, 0)  # start LOW
         self.pulses = 0
+        # Epoch us of the most recent RISING edge, stamped in the line immediately before the
+        # write so it is the closest observable proxy for when stimulation actually started.
+        # time.time_ns(), NOT monotonic: it has to be the same clock domain as Sample.host_t_us
+        # and the tick's now_us, or the differences downstream are meaningless.
+        self.last_edge_us = None
 
     def pulse(self, ms = 20): # pulses should last 20ms usually
+        self.last_edge_us = time.time_ns() // 1000
         self._lg.gpio_write(self._h, self.pin, 1)
         time.sleep(ms / 1000.0)
         self._lg.gpio_write(self._h, self.pin, 0)
@@ -20,6 +26,7 @@ class LgpioGPIO:
     async def pulse_async(self, ms = 20):
         """Same pulse without blocking the event loop. time.sleep() here is a 20 ms blackout on
         all three BLE streams at once; asyncio.sleep() lets the notifications through."""
+        self.last_edge_us = time.time_ns() // 1000
         self._lg.gpio_write(self._h, self.pin, 1)
         try:
             await asyncio.sleep(ms / 1000.0)
@@ -40,8 +47,10 @@ class MockGPIO:
     def __init__(self, pin: int):
         self.pin = pin
         self.pulses = 0
+        self.last_edge_us = None      # same contract as LgpioGPIO, so the log looks identical
 
     def pulse(self, pulse_ms: int) -> None:
+        self.last_edge_us = time.time_ns() // 1000
         self.pulses += 1
         print(f"  [MOCK GPIO pin {self.pin}] TTL pulse #{self.pulses} "
               f"({pulse_ms} ms)")
@@ -49,6 +58,7 @@ class MockGPIO:
     async def pulse_async(self, pulse_ms: int) -> None:
         """Mock has nothing to hold high, so it just yields for the same duration - the async
         path must behave the same way with or without real GPIO."""
+        self.last_edge_us = time.time_ns() // 1000
         await asyncio.sleep(pulse_ms / 1000.0)
         self.pulses += 1
         print(f"  [MOCK GPIO pin {self.pin}] TTL pulse #{self.pulses} "

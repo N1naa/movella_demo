@@ -144,11 +144,19 @@ class Block1Pipeline:
         self.n_scored += 1
         self.n_fired += bool(fired)
         self.n_lhoste_fired += bool(lh_fired)
-        return {"k": idx, "p": p, "p_smooth": self.decision.p_smooth,
+        # us_* are the SAME measurements timings() averages, emitted per window instead of only
+        # as a lifetime mean - a mean cannot show a tail, and these accumulators are never reset,
+        # so late-session degradation is invisible in timings(). Preprocessing is deliberately
+        # absent: it runs once per _advance() batch over all the new rows, so it has no per-window
+        # value to report; timings()["preprocess"] remains the way to read it.
+        return {"k": idx, "sensor_t_us": self.aligner.sensor_t_us_at(idx),
+                "p": p, "p_smooth": self.decision.p_smooth,
                 "armed": self.decision.armed, "stimulating": self.decision.stimulating,
                 "fired": bool(fired),
                 "lh": self.lhoste.score, "lh_thr": self.lhoste.threshold,
-                "lh_fired": bool(lh_fired)}
+                "lh_fired": bool(lh_fired),
+                "us_extract": (t1 - t0) * 1e6, "us_predict": (t2 - t1) * 1e6,
+                "us_decide": (t3 - t2) * 1e6}
 
     def timings(self):
         """Mean us per scored window, per stage. Read these off the Pi, not a laptop."""
