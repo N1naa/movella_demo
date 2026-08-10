@@ -4,7 +4,7 @@
   "roles": {
     "torso":     ["005489"],
     "upper_arm": ["00548d"],
-    "forearm":   ["005498"] 
+    "forearm":   ["005495"] 
   },
   "trigger": {
     "_comment": "TTL OUTPUT ONLY - nothing here decides a stimulation. What decides is the model: threshold on p_smooth in config.json, spaced by its stim_ms/lockout_ms. refractory_s is a hardware-side ceiling on top of that, independent of the model; 0.0 means the model's own spacing is the only limit.",
