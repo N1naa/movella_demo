@@ -91,7 +91,7 @@
   .lock-cap b{color:var(--lock)}
 
   /* session control */
-  .session{margin-top:16px; display:flex; align-items:center; gap:16px;
+  .session{margin-top:16px; display:flex; align-items:center; gap:16px; flex-wrap:wrap;
     border:1px solid var(--line); border-radius:14px; background:var(--panel); padding:13px 16px}
   .sess-btn{padding:10px 20px; border:1px solid var(--cool); border-radius:10px;
     background:rgba(95,179,196,.10); color:var(--cool); font-family:var(--mono);
@@ -99,6 +99,17 @@
   .sess-btn:hover{background:rgba(95,179,196,.18)}
   .sess-btn.on{border-color:var(--rec); color:var(--rec); background:rgba(226,88,122,.10)}
   .sess-btn:focus-visible{outline:2px solid var(--cool); outline-offset:2px}
+  /* the session control is keyboard-only now, so it reads as a status pill, not a target */
+  .sess-btn.static{cursor:default}
+  .sess-btn.static:hover{background:rgba(95,179,196,.10)}
+  .sess-btn.static.on:hover{background:rgba(226,88,122,.10)}
+  .sess-btn.static kbd{font-family:var(--mono); font-size:11px; border:1px solid currentColor;
+    border-radius:4px; padding:1px 5px; margin-left:9px; opacity:.75}
+  /* trial gate: amber when stimulation is allowed, matching the fire colour */
+  .sess-btn.trial.on{border-color:var(--fire); color:var(--fire); background:rgba(255,176,46,.10)}
+  .sess-btn.trial.on:hover{background:rgba(255,176,46,.18)}
+  .sess-btn.trial:disabled{opacity:.35; cursor:not-allowed}
+  .sess-btn.trial:disabled:hover{background:rgba(95,179,196,.10)}
   .sess-state{font-family:var(--mono); font-size:12px; color:var(--muted)}
 
   /* block 1 — the model's smoothed probability vs its own threshold */
@@ -230,7 +241,8 @@
   </section>
 
   <section class="session">
-    <button class="sess-btn" id="sess-btn">START SESSION</button>
+    <div class="sess-btn static" id="sess-btn">START SESSION<kbd>S</kbd></div>
+    <button class="sess-btn trial" id="trial-btn" disabled>START TRIAL (ALLOW STIMULATION)</button>
     <div class="sess-state" id="sess-state">session stopped · stim disarmed</div>
   </section>
 
@@ -304,7 +316,7 @@ const CHANNELS = [
 
 const $ = id => document.getElementById(id);
 const hist = {}, sel = {};                         // role -> trace ring / selected key
-let chBuilt = false, fireLog = [], wasSession = false;
+let chBuilt = false, fireLog = [], wasSession = false, wasTrial = false;
 
 function setConn(state, text){                     // state: 'ok' | 'bad' | 'sim'
   const p = $('pill-conn');
@@ -433,13 +445,29 @@ function renderLog(){
 }
 $('clr-btn').addEventListener('click', () => { fireLog = []; renderLog(); });
 
-$('sess-btn').addEventListener('click', async () => {
-  const turningOn = $('sess-btn').textContent.startsWith('START');
+async function post(url, on, what){
   try{
-    await fetch('/session', { method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({on: turningOn}) });
-  }catch(e){ console.error('session toggle failed', e); }
+    await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({on}) });
+  }catch(e){ console.error(what + ' toggle failed', e); }
+}
+
+/* Session start/stop is a keypress, not a click: during a run the operator is at the participant,
+   not at the mouse. wasSession is the last state the server reported, so the key toggles against
+   the server's truth rather than against a label. */
+document.addEventListener('keydown', e => {
+  if(e.key !== 's' && e.key !== 'S') return;
+  if(e.ctrlKey || e.metaKey || e.altKey) return;
+  const t = e.target;
+  // typing targets only — BUTTON is deliberately not here, or S would die whenever the
+  // trial button still holds focus from the last click
+  if(t && (t.isContentEditable || ['INPUT','SELECT','TEXTAREA'].includes(t.tagName))) return;
+  e.preventDefault();
+  post('/session', !wasSession, 'session');
 });
+
+/* Trial gate: stays a click so it can't be hit by accident while reaching for S. */
+$('trial-btn').addEventListener('click', () => post('/trial', !wasTrial, 'trial'));
 
 /* p_smooth is the k-window causal mean Decision actually thresholds, so it — not the raw p —
    drives the ring, the trace and the state word. It advances at hop_ms (10 Hz) while frames
@@ -450,6 +478,7 @@ let t0 = null;
 function render(s){
   if(t0 === null) t0 = performance.now()/1000;
   const session = !!s.session;
+  const trial = !!s.trial;
   const thr = (typeof s.p_threshold === 'number') ? s.p_threshold : 0.68;
   const ps  = (typeof s.p_smooth === 'number') ? s.p_smooth : null;
   const above = ps !== null && ps >= thr;          // >= to fire, as in inference.Decision
@@ -483,6 +512,10 @@ function render(s){
     gate.classList.toggle('lockout', locked && !s.fired);
     if(s.fired){
       $('state').textContent = 'FIRING'; $('big').textContent = 'PULSE SENT';
+    }else if(!trial){
+      // scoring and the ring keep running; only the pin is gated
+      $('state').textContent = 'NO TRIAL';
+      $('big').textContent = above ? 'Over threshold · stim blocked' : 'Stim blocked';
     }else if(locked){
       $('state').textContent = 'LOCKOUT'; $('big').textContent = `${s.lockout_remaining.toFixed(1)} s`;
     }else if(s.stimulating){
@@ -499,18 +532,28 @@ function render(s){
   // refractory status line (the bar was removed; the ring + countdown carry it)
   $('lock-cap').innerHTML = !session
     ? 'session stopped · stim disarmed'
-    : locked
-      ? `lockout · <b>${s.lockout_remaining.toFixed(1)} s</b> until re-armed · stim suppressed`
-      : 'armed · ready to fire';
+    : !trial
+      ? 'no trial · stim blocked · recording and scoring continue'
+      : locked
+        ? `lockout · <b>${s.lockout_remaining.toFixed(1)} s</b> until re-armed · stim suppressed`
+        : 'armed · ready to fire';
 
-  // session button reflects server state
+  // both controls reflect server state
   const sb = $('sess-btn');
   sb.classList.toggle('on', session);
-  sb.textContent = session ? 'STOP SESSION' : 'START SESSION';
-  $('sess-state').textContent = session ? 'session running · stim armed'
-                                        : 'session stopped · stim disarmed';
+  sb.innerHTML = (session ? 'STOP SESSION' : 'START SESSION') + '<kbd>S</kbd>';
+
+  const tb = $('trial-btn');
+  tb.disabled = !session;                        // no trial outside a session, as on the server
+  tb.classList.toggle('on', trial);
+  tb.textContent = trial ? 'STOP TRIAL (STOP STIMULATION)' : 'START TRIAL (ALLOW STIMULATION)';
+
+  $('sess-state').textContent = !session ? 'session stopped · stim disarmed'
+                              : trial ? 'session running · trial running · stim allowed'
+                                      : 'session running · no trial · stim blocked';
   if(session && !wasSession){ fireLog = []; pHist = []; t0 = performance.now()/1000; renderLog(); }
   wasSession = session;
+  wasTrial = trial;
 
   if(ps !== null){ pHist.push(ps); if(pHist.length > HIST) pHist.shift(); }
   drawTrace($('p-cv'), pHist, above ? '#ffb02e' : '#5fb3c4', [0, 1], thr);
@@ -623,7 +666,7 @@ function startSim(){
     if(lhAbove && !lhWasAbove) nLhFires++;
     lhWasAbove = lhAbove;
 
-    render({ ...cfg, connected:true, gpio_mock:true, session:true, fired, fires,
+    render({ ...cfg, connected:true, gpio_mock:true, session:true, trial:true, fired, fires,
              lockout_remaining: lockRem, sensors,
              p, p_smooth: pSmooth, armed: !pAbove, stimulating: pAbove,
              n_scored: nScored, n_model_fires: nModelFires,

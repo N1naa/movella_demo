@@ -68,7 +68,10 @@ async def block1_task(app):
         for out in pipe.tick(now_us):    # every window it scored, not just the newest
             app["last"] = out
             queue_block1_row(app, now_us, out)
-            if out["fired"] and app["session"]:
+            # app["trial"] gates the GPIO only. The window was still scored and the row was
+            # still queued above, so block1.csv and the UI are continuous across the whole
+            # session; between trials the decision is simply not carried to the pin.
+            if out["fired"] and app["session"] and app["trial"]:
                 await trig.fire_if_ready_async(now_us)
                 app["recorder"].write_event(trig.pulse_count, now_us, out["k"], "p_smooth",
                                             out["p_smooth"], pipe.cfg["threshold"],
@@ -123,6 +126,7 @@ async def broadcast_task(app):
         d = app.get("last") or {}
         await broadcast(app, {
             "connected": True, "gpio_mock": trig.is_mock, "session": app["session"],
+            "trial": app["trial"],
             "fired": fired, "fires": trig.pulse_count,
             "refractory_s": trig.refractory_s, "lockout_remaining": remaining,
             # Block 1: the model's state IS the trigger state - there is no other gauge
@@ -160,6 +164,7 @@ async def session_handler(request):
     body = await request.json()
     on = bool(body.get("on"))
     app["session"] = on
+    app["trial"] = False               # a session boundary never leaves stimulation allowed
     if on:
         app["trig"].reset()                # fresh session: armed now, fire count cleared
         pl = app["placement"]
@@ -183,7 +188,19 @@ async def session_handler(request):
     else:
         app["recorder"].stop()
         close_block1_csv(app)
-    return web.json_response({"ok": True, "session": on})
+    return web.json_response({"ok": True, "session": on, "trial": app["trial"]})
+
+
+async def trial_handler(request):
+    """Trial gate: the ONLY thing it changes is whether a model decision reaches the pin.
+
+    Recording, alignment, scoring, block1.csv and the UI are untouched, so the IMU log stays
+    one uncut stream for the whole session and the trial boundaries live in block1.csv/events.csv.
+    """
+    app = request.app
+    body = await request.json()
+    app["trial"] = bool(body.get("on")) and app["session"]   # no trial outside a session
+    return web.json_response({"ok": True, "trial": app["trial"]})
 
 
 def close_block1_csv(app):
@@ -255,11 +272,13 @@ def main():
     app = web.Application()
     app["clients"] = set()
     app["session"] = False
+    app["trial"] = False
     app["b1"] = None
     app["b1_q"] = deque()
     app["overruns"] = 0
     app.add_routes([web.get("/", index), web.get("/ws", ws_handler),
-                    web.post("/session", session_handler)])
+                    web.post("/session", session_handler),
+                    web.post("/trial", trial_handler)])
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
     web.run_app(app, host="0.0.0.0", port=8080)
