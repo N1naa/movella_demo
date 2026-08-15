@@ -1,0 +1,122 @@
+run_dir: formal_testing/UA053_20260807/20260807_112401
+started: 20260807_112401   files: block1=6559 events=59 imu={forearm:39352, torso:39353, upper_arm:39351}
+schema:  legacy  (pre-2026-08-10: events col 3 was headed sensor_t_us but held k; no per-window
+          timings, no TTL edge timestamp - the latency budget will be partial)
+
+====================================================================================================
+PASS 1 - DATA INTEGRITY
+====================================================================================================
+
+-- config ------------------------------------------------------------------------------------------
+  [PASS] run.json model config              name=mvmt_det_xgb_set85 threshold=0.8 k=3 stim_ms=1000 lockout_ms=0 refractory_s=3.0 rate_hz=60
+  [PASS] GPIO real (not mocked)             gpio_mock=false, TTL was live
+  [PASS] sensor role -> DOT id              torso=005489, upper_arm=00548d, forearm=005495
+
+-- sampling ----------------------------------------------------------------------------------------
+  [PASS] forearm rate / continuity          n= 39352 dur=  655.9s  59.999 Hz  dt med=16.667 ms max=16.7 ms | dropped=0 gaps>150ms=0 non-monotonic=0 wraps_unwrapped=0 NaN=0
+  [PASS] upper_arm rate / continuity        n= 39351 dur=  655.8s  59.999 Hz  dt med=16.667 ms max=16.7 ms | dropped=0 gaps>150ms=0 non-monotonic=0 wraps_unwrapped=0 NaN=0
+  [PASS] torso rate / continuity            n= 39353 dur=  655.9s  59.999 Hz  dt med=16.667 ms max=16.7 ms | dropped=0 gaps>150ms=0 non-monotonic=0 wraps_unwrapped=0 NaN=0
+  [PASS] sensors cover the same span        duration spread 33 ms across 3 sensors (no sensor dropped out early)
+  [PASS] forearm host-side stalls           0 host gaps > 500 ms (max 92 ms)
+  [PASS] torso host-side stalls             0 host gaps > 500 ms (max 100 ms)
+  [PASS] upper_arm host-side stalls         0 host gaps > 500 ms (max 99 ms)
+
+-- alignment ---------------------------------------------------------------------------------------
+  [PASS] offset torso - forearm drift       5.20 ms over the session (+0.488 ms/min) | tol 8.33 ms (half a sample). within tolerance
+  [PASS] offset upper_arm - forearm drift   5.49 ms over the session (+0.514 ms/min) | tol 8.33 ms (half a sample). within tolerance
+
+-- cadence -----------------------------------------------------------------------------------------
+  [PASS] block1 hop on the sample clock     6559 scored windows, dk == 6 samples (100.0 ms) on 100.0000% of steps; 0 off-hop step(s) []
+  [PASS] no duplicate / reordered windows   k strictly increasing, 0 duplicates
+  [PASS] detector-state resets              no smoother/arm-state restarts
+  [PASS] tick loop (host clock)             tick dt p50=100.0 ms p99=200.9 ms max=203.1 ms; 0 tick(s) > 250 ms (1162 rows share a tick = tick scored >1 window, expected)
+
+-- coverage ----------------------------------------------------------------------------------------
+  [PASS] block1 windows inside IMU span     6559/6559 scored windows map inside the recorded forearm stream. k origin K0=15765 ESTIMATED from host arrival times (sd 2.2 samples) - this session predates the sensor_t_us column, so window-age latency cannot be measured from it; k counts from APP startup, i.e. 263 s of streaming before recording began
+
+-- events ------------------------------------------------------------------------------------------
+  [PASS] events monotonic                   59 pulses; host_t_us strictly increasing=True, k strictly increasing=True, pulse_n contiguous=False
+  [PASS] every pulse joins a fired window   59/59 events matched a block1 row with fired=1
+  [PASS] events inside IMU coverage         59/59 inside the IMU host span, 59/59 inside the block1 span
+  [PASS] re-fire spacing >= stim+lockout+1  min spacing 12 windows (1.20 s), rule requires >= 11 (1.10 s)
+  [WARN] inter-pulse interval (host)        min=1.20s p50=4.45s max=119.3s (configured refractory 3.0s) - shorter than refractory_s: some rows are TTL-suppressed fires that were still logged (check pulse_n contiguity), so events.csv over-counts delivered pulses
+
+-- signal ------------------------------------------------------------------------------------------
+  [PASS] forearm saturation                 acc |max|=17.4 of 157 m/s^2, gyr |max|=332 of 2000 dps -> 0 acc / 0 gyr saturated samples
+  [PASS] forearm quaternion unit-norm       |q| in [1.000005, 1.000011], max deviation 1.05e-05
+  [PASS] forearm |acc| gravity consistency  median |acc| = 9.963 m/s^2 (expect ~9.81 with gravity)
+  [PASS] forearm flatline / stuck samples   0 byte-identical consecutive rows, 0 samples inside a 2 s zero-variance |gyr| window
+  [PASS] forearm long-axis vs world +Z      median  92.5 deg (p5 79, p95 119) - descriptive, mounting direction along the limb axis is free by design
+  [PASS] torso saturation                   acc |max|=11.4 of 157 m/s^2, gyr |max|=71 of 2000 dps -> 0 acc / 0 gyr saturated samples
+  [PASS] torso quaternion unit-norm         |q| in [1.000000, 1.000001], max deviation 7.62e-07
+  [PASS] torso |acc| gravity consistency    median |acc| = 9.833 m/s^2 (expect ~9.81 with gravity)
+  [PASS] torso flatline / stuck samples     0 byte-identical consecutive rows, 0 samples inside a 2 s zero-variance |gyr| window
+  [PASS] torso long-axis vs world +Z        median  20.3 deg (p5 8, p95 24) - descriptive, mounting direction along the limb axis is free by design
+  [PASS] upper_arm saturation               acc |max|=12.4 of 157 m/s^2, gyr |max|=130 of 2000 dps -> 0 acc / 0 gyr saturated samples
+  [PASS] upper_arm quaternion unit-norm     |q| in [0.999999, 1.000005], max deviation 5.25e-06
+  [PASS] upper_arm |acc| gravity consistency median |acc| = 10.042 m/s^2 (expect ~9.81 with gravity)
+  [PASS] upper_arm flatline / stuck samples 0 byte-identical consecutive rows, 0 samples inside a 2 s zero-variance |gyr| window
+  [PASS] upper_arm long-axis vs world +Z    median  27.4 deg (p5 19, p95 72) - descriptive, mounting direction along the limb axis is free by design
+  [PASS] segment activity ordering          p95 |gyr| forearm=62 > upper_arm=48 > torso=11 dps - distal > proximal as expected
+
+  => 0 FAIL, 1 WARN, 37 PASS
+
+====================================================================================================
+PASS 2 - SESSION CONTENT (descriptive only)
+====================================================================================================
+
+NO TASK SEGMENTATION IS POSSIBLE FROM THESE FILES.
+events.csv is a stimulation-pulse log, not a task/trial marker log: recorder.write_event is
+called only from the fire path in web_demo.py. There is no task name and no trial number
+anywhere in the recording. What follows is therefore (a) whole-session statistics and (b) the
+STIM-ALLOWED gate epochs reconstructed from delivered-vs-suppressed fires - the events-only
+route, so this reads legacy runs too. Those epochs are NOT tasks. Runs recorded from
+2026-08-11 on also have trials.csv, which holds those same boundaries exactly; this pass does
+not read it.
+
+-- whole session ------------------------------------------------------------------------------------
+  duration                10.9 min (656 s), 6559 scored windows
+  windows p_smooth>= 0.8  9.62%   (p_smooth: mean 0.159, median 0.006, p90 0.775)
+  hugging the threshold   2.12% of windows within +/-0.05 of 0.8
+  model fires             59 total, 59 DELIVERED as pulses, 0 suppressed by the trial gate
+  stim-on epochs          59 bursts, median 1000 ms, 9.0% of session time inside a burst
+  delivered rate          5.40 pulses/min over the whole session, 6.14/min over the stim-active span
+
+-- p_smooth distribution ----------------------------------------------------------------------------
+  percentiles  p1=0.000  p5=0.000  p10=0.000  p25=0.001  p50=0.006  p75=0.087  p90=0.775  p95=0.935  p99=0.973
+  bimodality   75.8% of windows below 0.10, 6.9% above 0.90, 17.3% in between
+
+-- decision->TTL scheduling jitter (rolling-min detrended) ------------------------------------------
+  all windows    p50= 97.3 ms  p90= 103.7 ms  p99= 104.5 ms  max= 110.9 ms
+  firing windows p50= 95.8 ms  p90= 102.7 ms  p99= 103.6 ms  max= 103.7 ms
+  late ticks     1162 of 6559 windows (17.7%) were not the newest of their tick, i.e. one tick scored several;
+                 of the 59 fires, 11 (18.6%) were issued ~100 ms after the window that caused them.
+
+-- stimulation latency budget ----------------------------------------------------------------------
+  NOT ADDITIVE: hop 3 is a component of hop 4 (block1.host_t_us is stamped before
+  pipe.tick() runs). The only real total is hop 2 + hop 4 = arrival -> TTL edge.
+  1. BLE arrival jitter (forearm)    p50=  18.23  p90=  35.66  p99=  54.24  max=  103.40 ms  (n=39352)
+  2. window age when scored          NOT MEASURABLE - this session has no block1.sensor_t_us,
+                                    so the k->IMU mapping is inferred from the same host timing this
+                                    would measure (circular). Re-record to get it.
+  3a. extract                        (not logged in this session)
+  3b. booster predict                (not logged in this session)
+  3c. decide + baseline (not split)  (not logged in this session)
+  3. compute per window (in hop 4)   (not logged in this session)
+  4. tick start -> TTL edge          (not logged in this session)
+                                     59 of 59 event rows have no t_gpio_us: either a legacy
+                                    recording, or the trigger declined the fire (refractory) and NO
+                                    pulse was delivered for that row.
+
+-- inferred stim-allowed (trial-gate) epochs --------------------------------------------------------
+    # gate   t_start     t_end    dur_s   wins  fires  deliv  %>=thr    p50    p90  stim/min  bnd+/-s
+    0 ON        65.0     641.4    576.4   5765     59     59   10.7%  0.007  0.837      6.14      0.0
+
+  gate ON     9.6 min in 1 epochs   gate OFF    0.0 min in 0 epochs
+  bnd+/-s = the gap between the last fire of an epoch and the first of the next: the
+  gate is only observed AT fires, so each boundary is uncertain by that much.
+
+-- anomaly flags ------------------------------------------------------------------------------------
+  arm/fire rule: 59/59 fires landed on a window that CROSSED 0.8 from below, as Decision specifies (consistent)
+  smoother lag:  raw p had been >= 0.8 for p50=100 ms p90=200 ms before p_smooth crossed and fired (k=3 causal mean; NOT movement-onset latency - no labels here)
+  none
