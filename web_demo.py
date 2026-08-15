@@ -175,6 +175,7 @@ async def session_handler(request):
     app = request.app
     body = await request.json()
     on = bool(body.get("on"))
+    was_trial = app["trial"]
     app["session"] = on
     app["trial"] = False               # a session boundary never leaves stimulation allowed
     if on:
@@ -203,6 +204,11 @@ async def session_handler(request):
         app["b1"] = (f, w)
         app["sess_mark"] = counter_snapshot(app)   # latency.json reports deltas against this
     else:
+        # Stopping the session while a trial was still open must close the interval here, or
+        # trials.csv ends on an `on` with no `off` and the last trial reads as running to the
+        # end of block1.csv. Before stop(): write_trial is a no-op once the recorder is inactive.
+        if was_trial:
+            app["recorder"].write_trial(time.time_ns() // 1000, last_scored_k(app), False)
         write_latency_json(app)                    # before stop(): it reads recorder.run_dir
         app["recorder"].stop()
         close_block1_csv(app)
@@ -213,12 +219,29 @@ async def trial_handler(request):
     """Trial gate: the ONLY thing it changes is whether a model decision reaches the pin.
 
     Recording, alignment, scoring, block1.csv and the UI are untouched, so the IMU log stays
-    one uncut stream for the whole session and the trial boundaries live in block1.csv/events.csv.
+    one uncut stream for the whole session and the trial boundaries live in trials.csv.
     """
     app = request.app
     body = await request.json()
+    was = app["trial"]
     app["trial"] = bool(body.get("on")) and app["session"]   # no trial outside a session
+    # Log TRANSITIONS only. The UI posts the state it wants, not a toggle, so a double-click or
+    # a re-sent request can ask for the state that is already current; writing that would put two
+    # `on` rows in a row and break the (on, off) pairing every reader of this file relies on.
+    if app["trial"] != was:
+        app["recorder"].write_trial(time.time_ns() // 1000, last_scored_k(app), app["trial"])
     return web.json_response({"ok": True, "trial": app["trial"]})
+
+
+def last_scored_k(app):
+    """The most recent scored window index, or None before the very first window.
+
+    Same clock domain as block1.csv's `k`, so a trials.csv row joins straight into it. `k` counts
+    from app startup, not from session start, and app["last"] is not cleared between sessions:
+    a trial opened in the first moments of a session can therefore carry a k from just BEFORE
+    that session's first block1.csv row. It reads as "already on when the log begins", which is
+    what happened; it is not a stale value."""
+    return (app.get("last") or {}).get("k")
 
 
 def counter_snapshot(app):
@@ -319,6 +342,9 @@ async def on_startup(app):
 async def on_cleanup(app):
     for t in app["tasks"]:
         t.cancel()
+    if app["trial"]:             # same reason as in session_handler: never leave a trial open
+        app["recorder"].write_trial(time.time_ns() // 1000, last_scored_k(app), False)
+        app["trial"] = False
     write_latency_json(app)      # shutting down mid-session still leaves the counters behind
     app["recorder"].stop()
     close_block1_csv(app)

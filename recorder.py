@@ -1,4 +1,4 @@
-# recorder.py — per-IMU CSVs + trigger event log + a run.json config snapshot.
+# recorder.py — per-IMU CSVs + trigger event log + trial-gate log + a run.json config snapshot.
 # Inactive until start(); write_sample / write_event are cheap no-ops when idle,
 # so it's safe to wire as on_sample for every source and gate it on the session.
 import asyncio, csv, json
@@ -17,6 +17,8 @@ class Recorder:
         self._imu = {}            # role -> (file, writer)
         self._ev_f = None
         self._ev_w = None
+        self._tr_f = None         # trials.csv - the trial gate's on/off transitions
+        self._tr_w = None
         self._q = deque()         # (role, row) queued by the BLE path, written by _drain
         self._task = None         # the drain task, if there was a loop to start it on
 
@@ -42,6 +44,9 @@ class Recorder:
         self._ev_w.writerow(["pulse_n", "host_t_us", "k",
                              "feature", "value", "threshold", "refractory_s",
                              "sensor_t_us", "t_gpio_us"])
+        self._tr_f = open(self.run_dir / "trials.csv", "w", newline="")
+        self._tr_w = csv.writer(self._tr_f)
+        self._tr_w.writerow(["host_t_us", "k", "on"])
         (self.run_dir / "run.json").write_text(json.dumps({**config, "started": ts}, indent=2))
         self._q.clear()
         self.active = True
@@ -105,6 +110,32 @@ class Recorder:
                              "" if t_gpio_us is None else int(t_gpio_us)])
         self._ev_f.flush()        # events are rare; flush so they survive a crash
 
+    def write_trial(self, host_t_us, k, on):
+        """One TRANSITION of the trial gate - the only marker of session structure there is.
+
+        block1.csv is written continuously across the whole session (scoring never stops, only
+        the GPIO is gated), so without this file the stim-allowed epochs can be recovered only
+        from delivered-vs-suppressed fires in events.csv - i.e. observed at fire instants and
+        interpolated in between. That is a proxy; these rows are the boundaries themselves, and
+        they are what makes the Lhoste baseline's fires (block1.csv `lh_fired`, never wired to
+        the TTL and so absent from events.csv) restrictable to the same trial time as the model's.
+
+        host_t_us  epoch us of the toggle, the SAME clock as block1.csv's host_t_us column.
+        k          the most recently scored window index, or None before the first window was
+                   scored -> an empty cell. Joins block1.csv on `k`, so the boundary lands on
+                   the device clock too; it is the last window scored BEFORE the toggle, which
+                   places the transition in (k, k + hop].
+        on         1 = stimulation now allowed, 0 = no longer allowed.
+
+        Only real transitions belong here - the caller drops repeats, so the rows strictly
+        alternate and pair up as (on, off) intervals. A session stopped mid-trial still gets
+        its closing 0, so the last interval is never left open.
+        """
+        if not self.active or self._tr_w is None:
+            return
+        self._tr_w.writerow([host_t_us, "" if k is None else int(k), int(bool(on))])
+        self._tr_f.flush()        # trials are rare; flush so they survive a crash
+
     def stop(self):
         if not self.active:
             return
@@ -119,4 +150,7 @@ class Recorder:
         if self._ev_f:
             self._ev_f.flush(); self._ev_f.close()
             self._ev_f = self._ev_w = None
+        if self._tr_f:
+            self._tr_f.flush(); self._tr_f.close()
+            self._tr_f = self._tr_w = None
         print("  [recorder] stopped")
