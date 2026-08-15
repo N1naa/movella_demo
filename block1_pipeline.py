@@ -52,6 +52,7 @@ class Block1Pipeline:
         self.n_scored = self.n_fired = self.n_lhoste_fired = 0
         self.n_gap = self.n_desync = 0        # real data gaps / times we fell behind the stream
         self.t_pre = self.t_extract = self.t_predict = self.t_decide = 0.0
+        self.t_lhoste = 0.0                   # the baseline, timed APART from the deployed decide
         self.reset()
 
     # ------------------------------------------------------------------ ingest
@@ -133,13 +134,19 @@ class Block1Pipeline:
         # scored windows are exactly hop apart, so dt is always 100002 us - well under the
         # 150000 us gap threshold, whatever the tick loop is doing.
         fired = self.decision.update(p, idx * TICK_US)
+        t2b = time.perf_counter()
         # The baseline reads one feature out of the vector just extracted, so it costs no extra
-        # signal processing; it is timed with `decide` because that is the stage it belongs to.
+        # signal processing. It is timed SEPARATELY from `decide` and not folded into it: Lhoste
+        # is a comparison instrument that never reaches the TTL (see __init__), and it costs ~200x
+        # what the deployed Decision does - it runs a percentile over a 10 s history every window.
+        # Sharing one timer made `decide` read as a real pipeline stage when >99% of it was the
+        # baseline, which is wrong in any latency breakdown of the DEPLOYED system.
         lh_fired = self.lhoste.update(feats[FOREARM_SPEED], idx * TICK_US)
         t3 = time.perf_counter()
         self.t_extract += t1 - t0
         self.t_predict += t2 - t1
-        self.t_decide += t3 - t2
+        self.t_decide += t2b - t2
+        self.t_lhoste += t3 - t2b
         self._last_scored = idx
         self.n_scored += 1
         self.n_fired += bool(fired)
@@ -156,13 +163,17 @@ class Block1Pipeline:
                 "lh": self.lhoste.score, "lh_thr": self.lhoste.threshold,
                 "lh_fired": bool(lh_fired),
                 "us_extract": (t1 - t0) * 1e6, "us_predict": (t2 - t1) * 1e6,
-                "us_decide": (t3 - t2) * 1e6}
+                "us_decide": (t2b - t2) * 1e6, "us_lhoste": (t3 - t2b) * 1e6}
 
     def timings(self):
-        """Mean us per scored window, per stage. Read these off the Pi, not a laptop."""
+        """Mean us per scored window, per stage. Read these off the Pi, not a laptop.
+
+        `lhoste` is reported apart from `decide` and is NOT part of the deployed cost - subtract
+        it (or ignore it) when quoting what the shipped loop spends per window."""
         n = max(1, self.n_scored)
         return {"preprocess": self.t_pre / n * 1e6, "extract": self.t_extract / n * 1e6,
-                "predict": self.t_predict / n * 1e6, "decide": self.t_decide / n * 1e6}
+                "predict": self.t_predict / n * 1e6, "decide": self.t_decide / n * 1e6,
+                "lhoste": self.t_lhoste / n * 1e6}
 
     # ------------------------------------------------------------------ startup benchmark
     def benchmark(self, n=1000):

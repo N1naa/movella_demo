@@ -8,3 +8,4 @@ recordings/
 tests/recordings/
 analyze_session.py
 test_logging_schema.py
+report.txt

@@ -65,7 +65,17 @@ async def block1_task(app):
         # and Aligner.window() raises if the two are mixed.
         now_us = time.time_ns() // 1000
         app["tick_us"] = now_us
-        for out in pipe.tick(now_us):    # every window it scored, not just the newest
+        # How late this tick woke relative to its OWN deadline, measured before any work is done:
+        # pure scheduler slip (event loop + OS), with no compute in it. `overruns` only counts the
+        # ticks that fell a whole period behind; this is the distribution underneath that count.
+        us_late = (time.monotonic() - next_t) * 1e6
+        pre0, stage0 = pipe.t_pre, stage_total(pipe)
+        t0 = time.perf_counter()
+        outs = pipe.tick(now_us)         # gap check + aligner + preprocess batch + every score
+        us_tick = (time.perf_counter() - t0) * 1e6
+        queue_tick_row(app, now_us, outs, us_late, (pipe.t_pre - pre0) * 1e6,
+                       (stage_total(pipe) - stage0) * 1e6, us_tick)
+        for out in outs:                 # every window it scored, not just the newest
             app["last"] = out
             queue_block1_row(app, now_us, out)
             # app["trial"] gates the GPIO only. The window was still scored and the row was
@@ -83,7 +93,8 @@ async def block1_task(app):
                                             t_gpio_us=trig.gpio.last_edge_us if delivered else None)
         ticks += 1
         if ticks % 10 == 0:              # drain ~once a second, off the per-tick path
-            drain_block1_rows(app)
+            drain_csv_rows(app, "b1")
+            drain_csv_rows(app, "tk")
 
 
 def queue_block1_row(app, now_us, out):
@@ -98,11 +109,42 @@ def queue_block1_row(app, now_us, out):
                         f"{out['lh']:.6f}", f"{out['lh_thr']:.6f}", int(out["lh_fired"]),
                         "" if out["sensor_t_us"] is None else int(out["sensor_t_us"]),
                         f"{out['us_extract']:.1f}", f"{out['us_predict']:.1f}",
-                        f"{out['us_decide']:.1f}"])
+                        f"{out['us_decide']:.1f}", f"{out['us_lhoste']:.1f}"])
 
 
-def drain_block1_rows(app):
-    entry, q = app.get("b1"), app["b1_q"]
+# ticks.csv - one row per TICK, which is a different unit from block1.csv's per-WINDOW row.
+# Three things live at tick granularity and so have nowhere to sit in block1.csv:
+#   * preprocessing runs once per tick over all the samples that arrived, not once per window;
+#   * a tick's TOTAL cost is what has to fit in hop_ms - the per-window us_* are only a part of it;
+#   * a tick that scored NO window still consumed time and can still be late, and produces no
+#     block1.csv row at all - precisely the tick worth seeing.
+TICK_COLUMNS = ["host_t_us", "k_end", "n_windows", "us_late", "us_pre", "us_score", "us_tick"]
+
+
+def stage_total(pipe):
+    """Lifetime seconds across the four per-window stages, baseline included.
+
+    us_score is the sum of ALL of them, so subtract block1.csv's us_lhoste over the same tick to
+    get the deployed-only cost."""
+    return pipe.t_extract + pipe.t_predict + pipe.t_decide + pipe.t_lhoste
+
+
+def queue_tick_row(app, now_us, outs, us_late, us_pre, us_score, us_tick):
+    """One row per tick, written whether or not a window was scored.
+
+    us_tick - (us_pre + us_score) is the previously invisible remainder: the gap check, the
+    aligner's window copy and the per-tick bookkeeping, none of which any other file records.
+    The GPIO pulse is deliberately NOT in us_tick - fire_if_ready_async awaits pulse_ms of
+    event-loop time, which would swamp the distribution on exactly the ticks that fired; that
+    path is timed by events.csv's t_gpio_us instead."""
+    app["tk_q"].append([now_us, outs[-1]["k"] if outs else "", len(outs),
+                        f"{us_late:.1f}", f"{us_pre:.1f}", f"{us_score:.1f}", f"{us_tick:.1f}"])
+
+
+def drain_csv_rows(app, key):
+    """Write everything queued for app[key], a (file, writer) pair. Queue-then-drain keeps the
+    csv writes off the 100 ms tick path, the same trick recorder.write_sample uses."""
+    entry, q = app.get(key), app[key + "_q"]
     if entry is None:
         q.clear()                        # no session running; nothing to write these to
         return
@@ -192,7 +234,7 @@ async def session_handler(request):
                       "smoothing_k": cfg["smoothing_k"], "stim_ms": cfg["stim_ms"],
                       "lockout_ms": cfg["lockout_ms"], "us_per_call": app.get("us_per_call")},
         })
-        close_block1_csv(app)              # one per session, alongside the IMU CSVs
+        close_session_csvs(app)            # one per session, alongside the IMU CSVs
         f = open(run_dir / "block1.csv", "w", newline="")
         w = csv.writer(f)
         w.writerow(["host_t_us", "k", "p", "p_smooth", "armed", "stimulating", "fired",
@@ -200,8 +242,11 @@ async def session_handler(request):
                     # sensor_t_us = the reference IMU's raw counter at this window's last sample,
                     # so every scored window joins imu_<ref>.csv directly. us_* = per-window
                     # compute, the same measurements timings() only ever reports as a mean.
-                    "sensor_t_us", "us_extract", "us_predict", "us_decide"])
+                    # us_lhoste is the baseline's share, split out of us_decide so the deployed
+                    # decision cost can be quoted without the comparison instrument in it.
+                    "sensor_t_us", "us_extract", "us_predict", "us_decide", "us_lhoste"])
         app["b1"] = (f, w)
+        app["tk"] = open_ticks_csv(run_dir)
         app["sess_mark"] = counter_snapshot(app)   # latency.json reports deltas against this
     else:
         # Stopping the session while a trial was still open must close the interval here, or
@@ -211,7 +256,7 @@ async def session_handler(request):
             app["recorder"].write_trial(time.time_ns() // 1000, last_scored_k(app), False)
         write_latency_json(app)                    # before stop(): it reads recorder.run_dir
         app["recorder"].stop()
-        close_block1_csv(app)
+        close_session_csvs(app)
     return web.json_response({"ok": True, "session": on, "trial": app["trial"]})
 
 
@@ -257,7 +302,8 @@ def counter_snapshot(app):
             "n_desync": pipe.n_desync, "n_fired": pipe.n_fired,
             "n_lhoste_fired": pipe.n_lhoste_fired,
             "t_pre": pipe.t_pre, "t_extract": pipe.t_extract,
-            "t_predict": pipe.t_predict, "t_decide": pipe.t_decide}
+            "t_predict": pipe.t_predict, "t_decide": pipe.t_decide,
+            "t_lhoste": pipe.t_lhoste}
 
 
 def write_latency_json(app):
@@ -275,23 +321,37 @@ def write_latency_json(app):
     out = {k: now[k] - mark[k] for k in
            ("overruns", "n_scored", "n_gap", "n_desync", "n_fired", "n_lhoste_fired")}
     out["stage_us_mean"] = {s: (now[f"t_{s}"] - mark[f"t_{s}"]) / n * 1e6
-                            for s in ("pre", "extract", "predict", "decide")}
+                            for s in ("pre", "extract", "predict", "decide", "lhoste")}
     out["hop_ms"] = pipe.cfg["hop_ms"]
     out["benchmark_us_per_call"] = app.get("us_per_call")
     out["note"] = ("counters are deltas over this session only; stage_us_mean is the mean over "
-                   "this session's windows. Per-window extract/predict/decide are in block1.csv.")
+                   "this session's windows. Per-window extract/predict/decide/lhoste are in "
+                   "block1.csv, per-tick totals and scheduler lateness are in ticks.csv. "
+                   "`lhoste` is the display-only baseline - exclude it from deployed cost.")
     (rec.run_dir / "latency.json").write_text(json.dumps(out, indent=2))
     app["sess_mark"] = None
     print(f"  [recorder] latency -> {rec.run_dir / 'latency.json'}")
 
 
-def close_block1_csv(app):
-    drain_block1_rows(app)               # no lost tail rows
-    entry = app.get("b1")
-    if entry is not None:
-        entry[0].flush()
-        entry[0].close()
-    app["b1"] = None
+def open_ticks_csv(run_dir):
+    """Open ticks.csv and write its header. Kept out of session_handler so the block1 header
+    stays the only writerow([...]) literal in that function - test_logging_schema parses it."""
+    f = open(run_dir / "ticks.csv", "w", newline="")
+    w = csv.writer(f)
+    w.writerow(TICK_COLUMNS)
+    return f, w
+
+
+def close_session_csvs(app):
+    """Drain and close both per-session CSVs web_demo owns (block1.csv, ticks.csv). The IMU and
+    event logs belong to the Recorder and are closed by recorder.stop()."""
+    for key in ("b1", "tk"):
+        drain_csv_rows(app, key)         # no lost tail rows
+        entry = app.get(key)
+        if entry is not None:
+            entry[0].flush()
+            entry[0].close()
+        app[key] = None
 
 
 async def on_startup(app):
@@ -347,7 +407,7 @@ async def on_cleanup(app):
         app["trial"] = False
     write_latency_json(app)      # shutting down mid-session still leaves the counters behind
     app["recorder"].stop()
-    close_block1_csv(app)
+    close_session_csvs(app)
     for src in app["sources"].values():
         await src.stop()
     app["trig"].reset()
@@ -361,6 +421,8 @@ def main():
     app["trial"] = False
     app["b1"] = None
     app["b1_q"] = deque()
+    app["tk"] = None
+    app["tk_q"] = deque()
     app["overruns"] = 0
     app["sess_mark"] = None
     app.add_routes([web.get("/", index), web.get("/ws", ws_handler),
